@@ -30,6 +30,18 @@ cover: ## Run tests and report per-package coverage
 bench: ## Run all benchmarks without running tests
 	go test -run '^$$' -bench . -benchmem ./...
 
+.PHONY: fuzz
+fuzz: ## Fuzz the RESP reader for 60s, the T1.1 done-when condition
+	go test ./internal/resp -run '^$$' -fuzz FuzzReadValue -fuzztime 60s
+
+.PHONY: baseline
+baseline: build ## Run the redis-benchmark baseline and print a benchmarks.md table
+	test/bench/baseline.sh
+
+.PHONY: profile
+profile: build ## Capture CPU and heap profiles under load into docs/profiles/
+	test/bench/profile.sh
+
 .PHONY: lint
 lint: ## Run golangci-lint
 	golangci-lint run

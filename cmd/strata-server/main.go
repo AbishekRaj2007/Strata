@@ -10,14 +10,21 @@ import (
 	"os"
 	"os/signal"
 	"syscall"
+	"time"
 
 	_ "net/http/pprof" // registers profiling handlers on the pprof mux
 
+	"github.com/AbishekRaj2007/Strata/internal/engine"
 	"github.com/AbishekRaj2007/Strata/internal/log"
+	"github.com/AbishekRaj2007/Strata/internal/server"
 )
 
 // version is stamped at build time via -ldflags.
 var version = "dev"
+
+// shutdownTimeout bounds the drain so a stuck client cannot hold the process
+// open indefinitely. Phase 2 revisits it once a WAL fsync is on the path.
+const shutdownTimeout = 30 * time.Second
 
 type config struct {
 	addr        string
@@ -102,8 +109,6 @@ func run(cfg config) error {
 		logger.Info("pprof enabled", "addr", cfg.pprofAddr)
 	}
 
-	// Signal handling is wired now so that T1.2 extends a working drain
-	// rather than retrofitting one.
 	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
 	defer stop()
 
@@ -116,11 +121,56 @@ func run(cfg config) error {
 		"cache_mb", cfg.cacheMB,
 	)
 
-	// The engine and listener arrive in T1.2 and T1.3. Until then the binary
-	// exists, parses config, and shuts down cleanly on a signal.
-	logger.Warn("no engine wired yet; waiting for shutdown signal (see plan.md T1.2)")
+	// The map engine is Phase 1's stand-in; the LSM engine replaces it in
+	// Phase 3 behind the same interface. Nothing here is durable yet, and
+	// saying so at startup is cheaper than a bug report.
+	eng := engine.NewMemory()
+	logger.Warn("using the in-memory engine; data is not durable (see plan.md Phase 3)")
 
-	<-ctx.Done()
-	logger.Info("shutdown signal received; exiting")
+	srv, err := server.New(server.Config{
+		Addr:    cfg.addr,
+		Engine:  eng,
+		Logger:  logger,
+		Version: version,
+	})
+	if err != nil {
+		return fmt.Errorf("create server: %w", err)
+	}
+
+	// Binding before announcing means a port conflict is reported as a
+	// startup failure rather than logged after a "started" line.
+	if err := srv.Listen(); err != nil {
+		return err
+	}
+
+	served := make(chan error, 1)
+	go func() { served <- srv.Serve() }()
+
+	select {
+	case err := <-served:
+		// Serve returned on its own, which means accept failed rather than
+		// a signal arriving; the engine still needs closing.
+		if cerr := eng.Close(); cerr != nil {
+			logger.Error("close engine", "err", cerr)
+		}
+		return err
+
+	case <-ctx.Done():
+		logger.Info("shutdown signal received; draining")
+	}
+
+	// Bounding the drain means a stuck client cannot hold the process open
+	// forever, while a well-behaved one still finishes its command.
+	shutdownCtx, cancel := context.WithTimeout(context.Background(), shutdownTimeout)
+	defer cancel()
+
+	if err := srv.Shutdown(shutdownCtx); err != nil {
+		return fmt.Errorf("shutdown: %w", err)
+	}
+	if err := <-served; err != nil {
+		return err
+	}
+
+	logger.Info("shutdown complete")
 	return nil
 }

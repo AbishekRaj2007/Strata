@@ -2,7 +2,7 @@
 
 A persistent, log-structured key-value store with a Redis-compatible wire protocol. Written in Go, with no storage-engine dependencies.
 
-> **Status: in development, Phase 0 complete.** The repository builds, tests, and lints, and the on-disk format is specified. The engine itself is not implemented yet — `strata-server` parses configuration and shuts down cleanly, but does not serve requests. Benchmark numbers will appear here when they have been measured, and not before.
+> **Status: in development, Phase 1 in progress.** The on-disk format is specified, and the network layer, command dispatch, and connection lifecycle are written and tested against an in-memory map. The RESP2 codec that connects them is the task in hand, so the server does not build or serve requests yet. No storage engine exists: nothing is durable, and nothing survives a restart. Benchmark numbers will appear here when they have been measured, and not before.
 
 ## What it will be
 

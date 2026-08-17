@@ -10,7 +10,11 @@ When plan.md and this file disagree, plan.md wins. When the code and plan.md dis
 
 Phase 0 is complete: the package skeleton, Makefile, CI, `docs/format.md`, ADR-001 through ADR-008, and the `strata-cli` / `strata-server` binaries all exist. T0.1 stays unticked in plan.md until CI is confirmed green on a push.
 
-The engine is not implemented. `strata-server` validates config and shuts down cleanly but serves no requests. Next is Phase 1, starting with T1.1 (the RESP2 codec) — which is on the hand-write list below.
+Phase 1 is in progress and **the tree does not currently build**. T1.2, T1.3, and T1.4 are written — `internal/server`, `internal/engine`, and `test/bench` — and all compile against the codec API recorded in `internal/resp/CONTRACT.md`. They were verified green under `-race` against a throwaway reference codec that was deleted afterwards; they stay unticked until they are green against the real one.
+
+T1.1 is the open task: `internal/resp/resp_test.go` holds the test suite and fuzz target, and the reader and writer are hand-written by the author. Every other Phase 1 task is blocked on it. Do not implement it — offer review instead.
+
+The engine interface in `internal/engine/engine.go` is final, per T1.3. `Memory` is a temporary map behind it and is replaced in Phase 3 without call sites changing.
 
 Naming is settled: the project, the directory, the GitHub repo, and the module path `github.com/AbishekRaj2007/Strata` all agree, and the `INFO` banner must match when it is written.
 

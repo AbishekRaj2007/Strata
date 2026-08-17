@@ -502,6 +502,8 @@ Clients always send commands as an array of bulk strings. Servers reply with whi
 
 ### - [ ] T1.1 — Implement the complete RESP2 codec
 
+> **In progress.** The test suite and fuzz target are written (`internal/resp/resp_test.go`), and `internal/resp/CONTRACT.md` records the API they compile against. The reader and writer are hand-written by the author, per §4. Everything else in Phase 1 is blocked on this.
+
 **Effort:** 4–6 h · **Model:** write it yourself; Opus 5 to review the error paths afterwards
 
 Build a reader and writer covering all five RESP2 types plus the null bulk string, with strict framing. The reader sits on a `bufio.Reader` and returns a typed `Value`; the writer sits on a `bufio.Writer` with one method per reply shape.
@@ -518,6 +520,8 @@ Finish with a fuzz target over the reader asserting no panic on arbitrary bytes,
 
 ### - [ ] T1.2 — Build the TCP server and connection lifecycle
 
+> **Written, unverified.** `internal/server/server.go` plus tests, including the 50-connection and shutdown-drain cases. Green under `-race` against a reference codec; stays unticked until it is green against the real T1.1.
+
 **Effort:** 3–4 h · **Model:** Sonnet 5 for scaffolding, Opus 5 to review shutdown correctness
 
 Stand up the listener on port 6380 — deliberately not 6379, so real Redis stays usable on your machine — with one goroutine per connection, 16 KB buffered reader and writer per connection, and a read timeout so dead clients get reaped.
@@ -531,6 +535,8 @@ The substantial part is graceful shutdown. On `SIGINT` or `SIGTERM` you must sto
 ---
 
 ### - [ ] T1.3 — Build command dispatch and the full v1 command set
+
+> **Written, unverified.** `internal/server/command.go` and `internal/engine/`. The engine interface is the final one. The `redis-cli` and `go-redis` round trips in *Done when* cannot run until T1.1 lands.
 
 **Effort:** 3–4 h · **Model:** Sonnet 5
 
@@ -547,6 +553,8 @@ Handle `COMMAND DOCS` with an empty array.
 ---
 
 ### - [ ] T1.4 — Establish the performance baseline
+
+> **Harness written, nothing measured.** `test/bench/baseline.sh` and `test/bench/profile.sh`, wired to `make baseline` and `make profile`. `docs/benchmarks.md` stays empty until a run produces real numbers.
 
 **Effort:** 2–4 h · **Model:** Sonnet 5 for the harness, Opus 5 to interpret the first profiles
 

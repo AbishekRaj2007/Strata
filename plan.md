@@ -441,7 +441,7 @@ Set up a GitHub Project board with one column per phase and load in the task IDs
 
 ---
 
-### - [ ] T0.2 — Write the authoritative on-disk format specification
+### - [x] T0.2 — Write the authoritative on-disk format specification
 
 **Effort:** 2–3 h · **Model:** Opus 5 — design work, and worth reviewing before you commit to bytes
 
@@ -455,7 +455,7 @@ That hex dump is not busywork. When your reader disagrees with your writer at 1a
 
 ---
 
-### - [ ] T0.3 — Write the initial architecture decision records
+### - [x] T0.3 — Write the initial architecture decision records
 
 **Effort:** 1.5–2 h · **Model:** Opus 5 — ask it to argue the *opposite* side of each decision before you write
 
@@ -467,7 +467,7 @@ Write ADR-001 through ADR-008 as real documents, each with context, the decision
 
 ---
 
-### - [ ] T0.4 — Build the development and observability harness
+### - [x] T0.4 — Build the development and observability harness
 
 **Effort:** 1.5–2 h · **Model:** Sonnet 5
 

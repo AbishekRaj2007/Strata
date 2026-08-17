@@ -1,0 +1,36 @@
+version: "2"
+
+linters:
+  enable:
+    - errcheck
+    - govet
+    - ineffassign
+    - staticcheck
+    - unused
+    - bodyclose
+    - errorlint
+    - misspell
+    - revive
+    - unconvert
+    - unparam
+
+  settings:
+    revive:
+      rules:
+        - name: exported
+          # Exported identifiers carry doc comments; plan.md T9.2 makes this
+          # a release requirement, so it is enforced from the first commit.
+          severity: warning
+        - name: package-comments
+
+  exclusions:
+    rules:
+      # Test helpers legitimately ignore errors on cleanup paths.
+      - path: _test\.go
+        linters:
+          - errcheck
+          - unparam
+
+formatters:
+  enable:
+    - gofmt

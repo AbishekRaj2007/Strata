@@ -1,0 +1,25 @@
+# Build output
+/bin/
+# Binaries built into the repo root, not the cmd/ source directories.
+/strata-server
+/strata-cli
+
+# Engine data directories. Manifest, CURRENT, and LOCK are anchored so they
+# only match a data directory at the repo root, never a source file elsewhere.
+/data/
+*.sst
+*.wal
+/MANIFEST-*
+/CURRENT
+/LOCK
+
+# Profiles and coverage
+*.prof
+coverage.out
+coverage.html
+
+# Editor and OS noise
+.DS_Store
+*.swp
+.idea/
+.vscode/

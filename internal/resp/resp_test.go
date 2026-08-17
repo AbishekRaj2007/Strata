@@ -81,7 +81,7 @@ func TestReadBulkString(t *testing.T) {
 	}{
 		{"ordinary", "$5\r\nhello\r\n", "hello"},
 		{"empty", "$0\r\n\r\n", ""},
-		{"embedded CRLF", "$6\r\na\r\nb!\r\n", "a\r\nb!"},
+		{"embedded CRLF", "$5\r\na\r\nb!\r\n", "a\r\nb!"},
 		{"binary safe", "$3\r\n\x00\x01\x02\r\n", "\x00\x01\x02"},
 	}
 

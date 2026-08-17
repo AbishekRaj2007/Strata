@@ -78,7 +78,17 @@ The second is why `io.ReadFull` matters: it converts a mid-read EOF into
 ```go
 func NewReader(r *bufio.Reader) *Reader
 func (r *Reader) ReadValue() (Value, error)
+
+// Buffered reports whether unread bytes are already in the buffer, i.e.
+// whether the client pipelined another command behind this one. One line:
+// return r.br.Buffered() > 0
+func (r *Reader) Buffered() bool
 ```
+
+`Buffered` is what makes pipelining fast. The connection loop flushes its
+replies only when nothing further is buffered, so a pipelined batch of N
+commands costs one write syscall instead of N. It is the difference T1.4
+measures between the pipelined and unpipelined benchmark rows.
 
 ## Writer
 

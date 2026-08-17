@@ -8,9 +8,11 @@ When plan.md and this file disagree, plan.md wins. When the code and plan.md dis
 
 ## Project status
 
-Pre-implementation. The repository contains plan.md only. The first work is Phase 0 (T0.1–T0.4): repository skeleton, format specification, ADRs, dev tooling.
+Phase 0 is complete: the package skeleton, Makefile, CI, `docs/format.md`, ADR-001 through ADR-008, and the `strata-cli` / `strata-server` binaries all exist. T0.1 stays unticked in plan.md until CI is confirmed green on a push.
 
-The directory is named `Starta`; plan.md names the project `Strata`. Resolve this before Phase 1 — repo name, Go module path, and the `INFO` banner must agree.
+The engine is not implemented. `strata-server` validates config and shuts down cleanly but serves no requests. Next is Phase 1, starting with T1.1 (the RESP2 codec) — which is on the hand-write list below.
+
+Naming is settled: the project, the directory, the GitHub repo, and the module path `github.com/AbishekRaj2007/Strata` all agree, and the `INFO` banner must match when it is written.
 
 ## The rule that overrides convenience
 

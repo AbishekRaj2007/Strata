@@ -108,9 +108,15 @@ run_one() {
 	            -d "${VALUE_SIZE}" -q --precision 3)
 	[[ "${pipeline}" -gt 1 ]] && args+=(-P "${pipeline}")
 
+	# stderr is kept so a failing benchmark says why on the terminal.
+	#
+	# Failure is signalled by the FAILED sentinel rather than by calling die,
+	# because run_one is invoked inside a command substitution: exit there ends
+	# only the subshell, and the caller would carry on with empty values. The
+	# caller checks for the sentinel.
 	local output
-	output=$(redis-benchmark "${args[@]}" 2>/dev/null | grep -i "^${test_name}" || true)
-	[[ -z "${output}" ]] && { echo "0 0 0"; return; }
+	output=$(redis-benchmark "${args[@]}" | grep -i "^${test_name}" || true)
+	[[ -z "${output}" ]] && { echo "FAILED no-result-line"; return; }
 
 	# redis-benchmark -q line:
 	#   SET: 123456.78 requests per second, p50=0.100 msec, p99=0.500 msec
@@ -119,7 +125,13 @@ run_one() {
 	p50=$(sed -n 's/.*p50=\([0-9.]*\).*/\1/p' <<<"${output}")
 	p99=$(sed -n 's/.*p99=\([0-9.]*\).*/\1/p' <<<"${output}")
 
-	echo "${rps:-0} ${p50:-0} ${p99:-0}"
+	# A parse failure means redis-benchmark changed its output format. Refusing
+	# to guess is the point: a defaulted zero would reach docs/benchmarks.md as
+	# a published figure that no run actually produced.
+	[[ -n "${rps}" && -n "${p50}" && -n "${p99}" ]] \
+		|| { echo "FAILED unparsable-output"; return; }
+
+	echo "${rps} ${p50} ${p99}"
 }
 
 median() {
@@ -147,6 +159,8 @@ run_workload() {
 		redis-cli -p "${PORT}" FLUSHDB >/dev/null 2>&1 || true
 
 		read -r rps p50 p99 <<<"$(run_one "${test_name}" "${pipeline}")"
+		[[ "${rps}" == "FAILED" ]] && die "${test_name} (pipeline=${pipeline}) run ${run}: ${p50}; the server may have died mid-run"
+
 		rps_all+=("${rps}"); p50_all+=("${p50}"); p99_all+=("${p99}")
 		echo "    run ${run}/${RUNS}: ${rps} ops/sec, p50=${p50}ms, p99=${p99}ms" >&2
 	done

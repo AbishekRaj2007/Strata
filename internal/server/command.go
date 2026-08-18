@@ -268,6 +268,9 @@ func (c *conn) cmdScan(args [][]byte) error {
 }
 
 func filterMatching(keys [][]byte, pattern string) [][]byte {
+	// Zero capacity, not just zero length: keys[:0] would share the backing
+	// array and overwrite entries still to be read by the loop below. The
+	// engine owns that array, so the first append must allocate.
 	out := keys[:0:0]
 	for _, k := range keys {
 		// path.Match is glob-like but not identical to Redis's matcher; the

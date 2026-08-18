@@ -15,6 +15,10 @@
 
 # Profiles and coverage
 *.prof
+# T1.4 commits its baseline profiles, so the raw pprof files under docs/ are
+# exempt: the SVG flamegraphs are unreadable by pprof, and a profile nobody can
+# reopen cannot be compared against a Phase 8 capture.
+!docs/profiles/*.prof
 coverage.out
 coverage.html
 

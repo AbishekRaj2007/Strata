@@ -28,6 +28,17 @@ const (
 // deliberately generous: redis-cli sessions idle for minutes between commands.
 const DefaultIdleTimeout = 5 * time.Minute
 
+// DefaultWriteTimeout bounds a single flush. It is far shorter than the idle
+// timeout because the two mean different things: an idle connection is a
+// client with nothing to say, while a connection that cannot absorb a reply
+// within this window has stopped reading and is not coming back.
+//
+// Without it a client that pipelines a batch and then stops reading blocks its
+// handler in Flush once the kernel send buffer fills. That handler is not idle,
+// so shutdown will not close it, and the drain in Shutdown is left waiting on
+// a goroutine that never returns.
+const DefaultWriteTimeout = 30 * time.Second
+
 // Config configures a Server.
 type Config struct {
 	Addr        string
@@ -35,6 +46,10 @@ type Config struct {
 	Logger      log.Logger
 	Version     string
 	IdleTimeout time.Duration
+
+	// WriteTimeout bounds one flush. Zero selects DefaultWriteTimeout; a
+	// negative value disables the deadline, which only a test should want.
+	WriteTimeout time.Duration
 }
 
 // Server accepts connections and serves the Strata command set over RESP2.
@@ -74,6 +89,9 @@ func New(cfg Config) (*Server, error) {
 	}
 	if cfg.IdleTimeout == 0 {
 		cfg.IdleTimeout = DefaultIdleTimeout
+	}
+	if cfg.WriteTimeout == 0 {
+		cfg.WriteTimeout = DefaultWriteTimeout
 	}
 
 	return &Server{
@@ -326,7 +344,7 @@ func (c *conn) serve() {
 			if werr := c.w.WriteError(err.Error()); werr != nil {
 				return
 			}
-			if ferr := c.bw.Flush(); ferr != nil {
+			if ferr := c.flush(); ferr != nil {
 				return
 			}
 			continue
@@ -343,7 +361,7 @@ func (c *conn) serve() {
 		// this is the single write syscall. A batch that fills the buffer
 		// flushes earlier, which is the desired backpressure.
 		if !c.r.Buffered() || errors.Is(derr, errQuit) {
-			if err := c.bw.Flush(); err != nil {
+			if err := c.flush(); err != nil {
 				return
 			}
 		}
@@ -363,13 +381,24 @@ func (c *conn) reportReadError(err error, remote string) {
 		// Best-effort: the peer is already misbehaving, so a failed write
 		// here changes nothing.
 		_ = c.w.WriteError("ERR Protocol error: " + err.Error())
-		_ = c.bw.Flush()
+		_ = c.flush()
 		c.srv.log.Debug("protocol error", "remote", remote, "err", err)
 	case errors.Is(err, os.ErrDeadlineExceeded):
 		c.srv.log.Debug("connection idle timeout", "remote", remote)
 	default:
 		c.srv.log.Debug("connection read ended", "remote", remote, "err", err)
 	}
+}
+
+// flush writes buffered replies under a deadline, so that a peer which has
+// stopped reading cannot pin this goroutine indefinitely and stall shutdown.
+func (c *conn) flush() error {
+	if c.srv.cfg.WriteTimeout > 0 {
+		if err := c.nc.SetWriteDeadline(time.Now().Add(c.srv.cfg.WriteTimeout)); err != nil {
+			return err
+		}
+	}
+	return c.bw.Flush()
 }
 
 func (c *conn) closeSocket() {

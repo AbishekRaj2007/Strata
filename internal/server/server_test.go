@@ -605,6 +605,77 @@ func TestShutdownDrainsInFlightCommands(t *testing.T) {
 	}
 }
 
+// TestStalledReaderDoesNotBlockShutdown covers the peer that pipelines a batch
+// and then stops reading. Its handler blocks in Flush once the kernel send
+// buffer fills; because it is mid-command rather than idle, closeIdleConns
+// leaves it alone, and without a write deadline the drain waits on a goroutine
+// that never returns.
+func TestStalledReaderDoesNotBlockShutdown(t *testing.T) {
+	s, err := New(Config{
+		Addr:   "127.0.0.1:0",
+		Engine: engine.NewMemory(),
+		Logger: log.Discard(),
+		// Short enough to keep the test quick, long enough that it is the
+		// stall being measured rather than a racing deadline.
+		WriteTimeout: 250 * time.Millisecond,
+		Version:      "test",
+	})
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+	if err := s.Listen(); err != nil {
+		t.Fatalf("Listen: %v", err)
+	}
+
+	served := make(chan error, 1)
+	go func() { served <- s.Serve() }()
+
+	c := dial(t, s)
+
+	// Store a large value, then ask for it many times without ever reading a
+	// reply. The replies overflow both the write buffer and the socket, and
+	// the handler parks in Flush.
+	c.do("SET", "k", strings.Repeat("x", 64<<10))
+
+	// Queue the reads in one batch: buffering them all before the flush is
+	// what makes the server produce replies faster than this side drains them.
+	for range 512 {
+		if err := c.w.WriteArrayHeader(2); err != nil {
+			t.Fatalf("WriteArrayHeader: %v", err)
+		}
+		for _, a := range []string{"GET", "k"} {
+			if err := c.w.WriteBulkString([]byte(a)); err != nil {
+				t.Fatalf("WriteBulkString: %v", err)
+			}
+		}
+	}
+	if err := c.bw.Flush(); err != nil {
+		t.Fatalf("flush commands: %v", err)
+	}
+
+	// Give the handler time to fill the pipe and block.
+	time.Sleep(100 * time.Millisecond)
+
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+
+	start := time.Now()
+	if err := s.Shutdown(ctx); err != nil {
+		t.Errorf("Shutdown: %v", err)
+	}
+	elapsed := time.Since(start)
+
+	// The drain must finish because the write deadline fired, not because the
+	// shutdown context expired and forced every socket closed.
+	if elapsed >= 5*time.Second {
+		t.Errorf("shutdown took %v; it waited for the context deadline, so the write timeout did not release the handler", elapsed)
+	}
+
+	if err := <-served; err != nil {
+		t.Errorf("Serve returned %v, want nil on a deliberate shutdown", err)
+	}
+}
+
 // TestShutdownClosesIdleConnections covers the case that would otherwise hold
 // shutdown for the full idle timeout: a client that connects and says nothing.
 func TestShutdownClosesIdleConnections(t *testing.T) {

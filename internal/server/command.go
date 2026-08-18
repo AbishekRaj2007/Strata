@@ -103,6 +103,19 @@ func unknownCommandError(name string, rest [][]byte) string {
 	return sb.String()
 }
 
+// validateKeys rejects an oversized key before it reaches the engine.
+// docs/format.md §0.1 requires an oversized key to be refused at the protocol
+// boundary and never reach the WAL; the engine validates again as defence in
+// depth, but by then a durable engine has already taken its write lock.
+func (c *conn) validateKeys(keys ...[]byte) error {
+	for _, k := range keys {
+		if len(k) > engine.MaxKeySize {
+			return c.w.WriteError("ERR key exceeds maximum size")
+		}
+	}
+	return nil
+}
+
 func (c *conn) cmdPing(args [][]byte) error {
 	if len(args) == 1 {
 		return c.w.WriteSimpleString("PONG")
@@ -126,6 +139,10 @@ func (c *conn) cmdSet(args [][]byte) error {
 		return c.w.WriteError("ERR syntax error")
 	}
 
+	if err := c.validateKeys(args[1]); err != nil {
+		return err
+	}
+
 	if err := c.engine.Put(args[1], args[2]); err != nil {
 		return c.replyEngineError(err)
 	}
@@ -133,6 +150,10 @@ func (c *conn) cmdSet(args [][]byte) error {
 }
 
 func (c *conn) cmdGet(args [][]byte) error {
+	if err := c.validateKeys(args[1]); err != nil {
+		return err
+	}
+
 	v, err := c.engine.Get(args[1])
 	if errors.Is(err, engine.ErrNotFound) {
 		// The null bulk string, distinct from an empty one. A key holding
@@ -146,6 +167,12 @@ func (c *conn) cmdGet(args [][]byte) error {
 }
 
 func (c *conn) cmdDel(args [][]byte) error {
+	// Validated up front so a batch is refused whole rather than deleting a
+	// prefix of it and then erroring.
+	if err := c.validateKeys(args[1:]...); err != nil {
+		return err
+	}
+
 	var n int64
 	for _, key := range args[1:] {
 		existed, err := c.engine.Delete(key)
@@ -160,6 +187,10 @@ func (c *conn) cmdDel(args [][]byte) error {
 }
 
 func (c *conn) cmdExists(args [][]byte) error {
+	if err := c.validateKeys(args[1:]...); err != nil {
+		return err
+	}
+
 	// EXISTS counts every occurrence, so EXISTS k k on a present key is 2.
 	var n int64
 	for _, key := range args[1:] {

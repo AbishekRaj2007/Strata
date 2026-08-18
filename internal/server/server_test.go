@@ -336,6 +336,57 @@ func TestErrorReplies(t *testing.T) {
 	}
 }
 
+// TestOversizedKeyIsRejected covers docs/format.md §0.1: an oversized key is
+// refused at the protocol boundary and never reaches the engine. The reply is
+// an error on a live connection rather than a dropped connection, because the
+// frame itself was well formed.
+func TestOversizedKeyIsRejected(t *testing.T) {
+	big := strings.Repeat("k", engine.MaxKeySize+1)
+	atLimit := strings.Repeat("k", engine.MaxKeySize)
+
+	tests := []struct {
+		name string
+		args []string
+	}{
+		{"set", []string{"SET", big, "v"}},
+		{"get", []string{"GET", big}},
+		{"del", []string{"DEL", big}},
+		{"exists", []string{"EXISTS", big}},
+		{"del second key", []string{"DEL", "ok", big}},
+	}
+
+	s := newTestServer(t)
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			c := dial(t, s)
+			v := c.do(tt.args...)
+
+			if v.Type != resp.Error {
+				t.Fatalf("%s = %+v, want an error", tt.name, v)
+			}
+			if !strings.Contains(string(v.Bytes), "key exceeds maximum size") {
+				t.Errorf("%s = %q, want it to mention the key size limit", tt.name, v.Bytes)
+			}
+
+			// The connection survives: a rejected key is a command error, not
+			// a framing error.
+			if pong := c.do("PING"); string(pong.Bytes) != "PONG" {
+				t.Errorf("PING after rejection = %+v, want PONG", pong)
+			}
+		})
+	}
+
+	t.Run("key at the limit is accepted", func(t *testing.T) {
+		c := dial(t, s)
+		if v := c.do("SET", atLimit, "v"); v.Type != resp.SimpleString {
+			t.Fatalf("SET at limit = %+v, want OK", v)
+		}
+		if v := c.do("GET", atLimit); string(v.Bytes) != "v" {
+			t.Errorf("GET at limit = %q, want %q", v.Bytes, "v")
+		}
+	})
+}
+
 // TestCaseInsensitiveCommands matters because clients vary: go-redis sends
 // lower case, redis-cli upper.
 func TestCaseInsensitiveCommands(t *testing.T) {

@@ -605,6 +605,8 @@ Fragmentation exists for one reason: to bound the blast radius of a torn write. 
 
 ### - [ ] T2.2 — Implement sync policies and group commit
 
+> **Coordinator done, not wired.** `internal/wal/policy.go` and `internal/wal/syncer.go`: all three policies, the leader-follower handoff, and the interval timer. Measured at **16.8× median speedup** with 32 writers against 1 (docs/benchmarks.md), past the 5× bar. The falsely-signalled-writer test exists and was verified by mutation — injecting the bug (reading the offset after the sync instead of capturing it before) makes it fail with named offsets. The syncer coordinates a `Syncable`, which the T2.1 writer satisfies; until then nothing calls it on the write path, so this stays unticked.
+
 **Effort:** 3–4 h · **Model:** Opus 5 — the coordination logic is the interesting part
 
 Implement all three sync policies behind a config flag, then implement group commit on top: when several writers arrive concurrently, one performs the fsync on behalf of all and wakes the rest. Throughput then *rises* with concurrency rather than collapsing.
@@ -632,6 +634,8 @@ The judgement call is the failure taxonomy. A truncated *trailing* record is exp
 ---
 
 ### - [ ] T2.4 — Build the crash-testing harness
+
+> **Built, gated.** `test/crash/` holds the harness: process supervision with SIGKILL, the acknowledgement recorder, the verifier, and the `STRATA_CRASH_AT` fault injection points for every phase through 6. Two self-tests run unconditionally and prove the plumbing drives a real server. The 100-iteration durability test is written and skips behind `STRATA_DURABLE`, because the map engine legitimately loses everything on restart; setting the variable today makes it fail with the exact missing keys, which is the behaviour Phase 3 needs. Stays unticked until it runs green against a durable engine as a CI job.
 
 **Effort:** 4–6 h · **Model:** Sonnet 5 for the harness, Fable 5 to design the verification predicate
 

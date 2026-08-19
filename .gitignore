@@ -13,6 +13,11 @@
 /CURRENT
 /LOCK
 
+# Scratch directories from the T2.2 sync benchmarks. They are created on the
+# repository's own filesystem because fsync is a no-op on the tmpfs that backs
+# TMPDIR, and a crashed run leaves one behind.
+syncer-*/
+
 # Profiles and coverage
 *.prof
 # T1.4 commits its baseline profiles, so the raw pprof files under docs/ are

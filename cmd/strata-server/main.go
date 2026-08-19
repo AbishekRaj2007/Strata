@@ -17,6 +17,7 @@ import (
 	"github.com/AbishekRaj2007/Strata/internal/engine"
 	"github.com/AbishekRaj2007/Strata/internal/log"
 	"github.com/AbishekRaj2007/Strata/internal/server"
+	"github.com/AbishekRaj2007/Strata/internal/wal"
 )
 
 // version is stamped at build time via -ldflags.
@@ -59,10 +60,10 @@ func parseFlags(args []string, stderr *os.File) (config, error) {
 }
 
 func (c config) validate() error {
-	switch c.syncPolicy {
-	case "always", "interval", "never":
-	default:
-		return fmt.Errorf("invalid -sync %q: want always, interval, or never", c.syncPolicy)
+	// Parsed by the wal package rather than re-listed here, so the flag and
+	// the policy it selects cannot drift apart.
+	if _, err := wal.ParseSyncPolicy(c.syncPolicy); err != nil {
+		return fmt.Errorf("invalid -sync: %w", err)
 	}
 	if c.memtableMB <= 0 {
 		return fmt.Errorf("invalid -memtable-mb %d: want a positive value", c.memtableMB)
@@ -125,7 +126,11 @@ func run(cfg config) error {
 	// Phase 3 behind the same interface. Nothing here is durable yet, and
 	// saying so at startup is cheaper than a bug report.
 	eng := engine.NewMemory()
-	logger.Warn("using the in-memory engine; data is not durable (see plan.md Phase 3)")
+	// The sync policy is parsed and reported, but nothing acts on it until the
+	// WAL writer exists (T2.1). Saying so keeps -sync=always from reading as a
+	// durability guarantee the engine cannot currently make.
+	logger.Warn("using the in-memory engine; data is not durable and -sync has no effect yet (see plan.md T2.1, T3.5)",
+		"sync", cfg.syncPolicy)
 
 	srv, err := server.New(server.Config{
 		Addr:    cfg.addr,

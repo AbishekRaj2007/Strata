@@ -14,3 +14,4 @@ The consequences section is the one that matters. A decision recorded without a 
 | [006](006-block-based-sstables.md) | Block-based SSTables, 4 KiB blocks | Accepted |
 | [007](007-crc32c-everywhere.md) | CRC32C on every block and WAL record | Accepted |
 | [008](008-manifest-as-edit-log.md) | Manifest as an append-only edit log | Accepted |
+| [009](009-resp-codec-is-not-hand-write-surface.md) | The RESP codec is not hand-write surface | Accepted |

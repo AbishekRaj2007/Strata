@@ -2,7 +2,7 @@
 
 A persistent, log-structured key-value store with a Redis-compatible wire protocol. Written in Go, with no storage-engine dependencies.
 
-> **Status: in development, Phase 1 in progress.** The on-disk format is specified, and the network layer, command dispatch, and connection lifecycle are written and tested against an in-memory map. The RESP2 codec that connects them is the task in hand, so the server does not build or serve requests yet. No storage engine exists: nothing is durable, and nothing survives a restart. Benchmark numbers will appear here when they have been measured, and not before.
+> **Status: in development, Phase 1 nearly complete.** The on-disk format is specified, and the RESP2 codec, network layer, command dispatch, and connection lifecycle are written and green under the race detector against an in-memory map. No storage engine exists yet: nothing is durable, and nothing survives a restart. Benchmark numbers will appear here when they have been measured, and not before.
 
 ## What it will be
 
@@ -65,6 +65,12 @@ test/                 crash harness, reference model tests, workload generators
 ```
 
 `internal/` is deliberate: Go forbids external modules from importing it, which states that these are implementation details rather than a public API.
+
+## On AI assistance
+
+The storage engine is hand-written: the skip list, the bloom filter, the block encoder and decoder, the k-way merge iterator, the compaction picker and executor, and WAL record framing and recovery. Those are the substance of the project, and generating them would defeat its purpose.
+
+The RESP2 codec in `internal/resp/` is AI-implemented, against a test suite and fuzz target that were written first, by hand. [ADR-009](docs/adr/009-resp-codec-is-not-hand-write-surface.md) records that decision and what it costs. Repository scaffolding, the Makefile, CI configuration, and the benchmark harness are AI-assisted as well.
 
 ## License
 

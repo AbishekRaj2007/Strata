@@ -107,13 +107,18 @@ func unknownCommandError(name string, rest [][]byte) string {
 // docs/format.md §0.1 requires an oversized key to be refused at the protocol
 // boundary and never reach the WAL; the engine validates again as defence in
 // depth, but by then a durable engine has already taken its write lock.
-func (c *conn) validateKeys(keys ...[]byte) error {
+//
+// The rejected result is reported separately from err because both a rejection
+// and a clean validation return a nil error: folding them together lets the
+// caller run the command after its error reply is already on the wire, which
+// desynchronises every later reply on the connection.
+func (c *conn) validateKeys(keys ...[]byte) (rejected bool, err error) {
 	for _, k := range keys {
 		if len(k) > engine.MaxKeySize {
-			return c.w.WriteError("ERR key exceeds maximum size")
+			return true, c.w.WriteError("ERR key exceeds maximum size")
 		}
 	}
-	return nil
+	return false, nil
 }
 
 func (c *conn) cmdPing(args [][]byte) error {
@@ -139,7 +144,7 @@ func (c *conn) cmdSet(args [][]byte) error {
 		return c.w.WriteError("ERR syntax error")
 	}
 
-	if err := c.validateKeys(args[1]); err != nil {
+	if rejected, err := c.validateKeys(args[1]); rejected || err != nil {
 		return err
 	}
 
@@ -150,7 +155,7 @@ func (c *conn) cmdSet(args [][]byte) error {
 }
 
 func (c *conn) cmdGet(args [][]byte) error {
-	if err := c.validateKeys(args[1]); err != nil {
+	if rejected, err := c.validateKeys(args[1]); rejected || err != nil {
 		return err
 	}
 
@@ -169,7 +174,7 @@ func (c *conn) cmdGet(args [][]byte) error {
 func (c *conn) cmdDel(args [][]byte) error {
 	// Validated up front so a batch is refused whole rather than deleting a
 	// prefix of it and then erroring.
-	if err := c.validateKeys(args[1:]...); err != nil {
+	if rejected, err := c.validateKeys(args[1:]...); rejected || err != nil {
 		return err
 	}
 
@@ -187,7 +192,7 @@ func (c *conn) cmdDel(args [][]byte) error {
 }
 
 func (c *conn) cmdExists(args [][]byte) error {
-	if err := c.validateKeys(args[1:]...); err != nil {
+	if rejected, err := c.validateKeys(args[1:]...); rejected || err != nil {
 		return err
 	}
 

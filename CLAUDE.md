@@ -10,9 +10,11 @@ When plan.md and this file disagree, plan.md wins. When the code and plan.md dis
 
 Phase 0 is complete: the package skeleton, Makefile, CI, `docs/format.md`, ADR-001 through ADR-008, and the `strata-cli` / `strata-server` binaries all exist. T0.1 stays unticked in plan.md until CI is confirmed green on a push.
 
-Phase 1 is in progress and **the tree does not currently build**. T1.2, T1.3, and T1.4 are written — `internal/server`, `internal/engine`, and `test/bench` — and all compile against the codec API recorded in `internal/resp/CONTRACT.md`. They were verified green under `-race` against a throwaway reference codec that was deleted afterwards; they stay unticked until they are green against the real one.
+Phase 1 is in progress and **the tree builds and is green under `-race`**. T1.1 and T1.2 are complete. T1.3 and T1.4 are written and passing, but stay unticked until their *Done when* conditions are actually exercised: the `redis-cli` and `go-redis` round trips for T1.3, and a recorded baseline run for T1.4.
 
-T1.1 is the open task: `internal/resp/resp_test.go` holds the test suite and fuzz target, and the reader and writer are hand-written by the author. Every other Phase 1 task is blocked on it. Do not implement it — offer review instead.
+T1.1 closed with `internal/resp/resp.go`, AI-implemented against the author-written suite per ADR-009 (the RESP codec is not §4 hand-write surface). `internal/resp/CONTRACT.md` is superseded by the doc comments on the real code and should be deleted.
+
+T0.1 is now unblockable — its done-when is green CI on a push, which was unreachable while the tree failed to compile.
 
 The engine interface in `internal/engine/engine.go` is final, per T1.3. `Memory` is a temporary map behind it and is replaced in Phase 3 without call sites changing.
 
@@ -30,6 +32,8 @@ Section 4 of plan.md defines which components must be hand-written by the author
 - WAL record framing and recovery
 
 For these, the only allowed help is *after* a working implementation exists: review it, attack it, propose tests, find the hole in the durability argument. If asked to write one from scratch, say so and offer review instead.
+
+The list is exactly these six. The RESP2 codec is **not** on it — ADR-009 removed it, and `internal/resp/resp.go` is AI-implemented against the author-written test suite. Do not read the list as covering framing or encoding work generally; "WAL record framing" means the WAL specifically.
 
 Everything else is fair game: scaffolding, Makefiles, CI, test harnesses, fixtures, benchmark runners, profiling interpretation, docs.
 

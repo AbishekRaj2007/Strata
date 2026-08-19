@@ -143,6 +143,8 @@ These are your interview surface. If you cannot derive them at a whiteboard, the
 
 For each, the correct workflow is: **attempt it yourself → get it working → then ask Opus 5 to review and attack it.** Review after is fine. Generation before is not.
 
+This list is exactly six items and is read literally. The RESP2 codec (T1.1) was for a time treated as a seventh; ADR-009 records why it is not, and the reasoning there is the test to apply if another component's membership is ever ambiguous. "WAL record framing and recovery" means the WAL — a durability construct whose failure mode is silent data loss after a crash. It does not extend to framing problems generally.
+
 ### AI-assisted is fine here
 
 - Repository scaffolding, Makefile, CI configuration
@@ -500,11 +502,11 @@ $-1\r\n                          Null bulk string — this is "key not found"
 
 Clients always send commands as an array of bulk strings. Servers reply with whichever type fits.
 
-### - [ ] T1.1 — Implement the complete RESP2 codec
+### - [x] T1.1 — Implement the complete RESP2 codec
 
-> **In progress.** The test suite and fuzz target are written (`internal/resp/resp_test.go`), and `internal/resp/CONTRACT.md` records the API they compile against. The reader and writer are hand-written by the author, per §4. Everything else in Phase 1 is blocked on this.
+> **Done.** `internal/resp/resp.go` implements the reader and writer against the author-written suite in `internal/resp/resp_test.go`. AI-implemented per ADR-009 — this task is not §4 hand-write surface. Fuzzed 60s / ~10M execs with no panic; the full tree is green under `-race`. `internal/resp/CONTRACT.md` is now superseded by the doc comments and can be deleted.
 
-**Effort:** 4–6 h · **Model:** write it yourself; Opus 5 to review the error paths afterwards
+**Effort:** 4–6 h · **Model:** Sonnet 5 to implement against the written suite; Opus 5 to review the error paths afterwards
 
 Build a reader and writer covering all five RESP2 types plus the null bulk string, with strict framing. The reader sits on a `bufio.Reader` and returns a typed `Value`; the writer sits on a `bufio.Writer` with one method per reply shape.
 
@@ -518,9 +520,9 @@ Finish with a fuzz target over the reader asserting no panic on arbitrary bytes,
 
 ---
 
-### - [ ] T1.2 — Build the TCP server and connection lifecycle
+### - [x] T1.2 — Build the TCP server and connection lifecycle
 
-> **Written, unverified.** `internal/server/server.go` plus tests, including the 50-connection and shutdown-drain cases. Green under `-race` against a reference codec; stays unticked until it is green against the real T1.1.
+> **Done.** `internal/server/server.go` plus tests, including the 50-connection and shutdown-drain cases, green under `-race` against the real T1.1 codec.
 
 **Effort:** 3–4 h · **Model:** Sonnet 5 for scaffolding, Opus 5 to review shutdown correctness
 
@@ -536,7 +538,7 @@ The substantial part is graceful shutdown. On `SIGINT` or `SIGTERM` you must sto
 
 ### - [ ] T1.3 — Build command dispatch and the full v1 command set
 
-> **Written, unverified.** `internal/server/command.go` and `internal/engine/`. The engine interface is the final one. The `redis-cli` and `go-redis` round trips in *Done when* cannot run until T1.1 lands.
+> **Green under test, not yet closed.** `internal/server/command.go` and `internal/engine/`, passing under `-race` against the real T1.1 codec. Verifying against it caught a desynchronisation bug the throwaway reference codec had hidden: `validateKeys` reported a rejected key by returning the result of `WriteError`, which is nil on success, so the caller ran the command anyway and wrote a second reply — leaving every later reply on that connection off by one. It now returns `(rejected bool, err error)`. Stays unticked until the `redis-cli` and `go-redis` round trips in *Done when* are actually run.
 
 **Effort:** 3–4 h · **Model:** Sonnet 5
 

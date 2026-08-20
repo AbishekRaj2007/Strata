@@ -1,4 +1,4 @@
-# T1.1 — the API `resp_test.go` expects
+s# T1.1 — the API `resp_test.go` expects
 
 The test suite is written; the implementation is yours (plan.md §4, CLAUDE.md
 hand-write list). This file records the exact surface the tests compile

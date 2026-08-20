@@ -353,18 +353,3 @@ func TestSyncerCloseReleasesWaiters(t *testing.T) {
 		t.Fatal("Close did not release a queued writer")
 	}
 }
-
-// itoa avoids pulling strconv into the test for two call sites.
-func itoa(n int64) string {
-	if n == 0 {
-		return "0"
-	}
-	var b [20]byte
-	i := len(b)
-	for n > 0 {
-		i--
-		b[i] = byte('0' + n%10)
-		n /= 10
-	}
-	return string(b[i:])
-}

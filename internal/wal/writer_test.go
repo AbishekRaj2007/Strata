@@ -10,11 +10,6 @@ import (
 	"testing"
 )
 
-// castagnoli is the checksum table docs/format.md §0 fixes for every structure
-// in the format. Declared here rather than imported from the implementation so
-// the tests check the spec rather than checking the code against itself.
-var castagnoli = crc32.MakeTable(crc32.Castagnoli)
-
 // tempWAL creates an empty WAL file and returns it with its path.
 func tempWAL(t *testing.T) (*os.File, string) {
 	t.Helper()
@@ -58,6 +53,12 @@ func readAll(t *testing.T, path string) ([]Batch, error) {
 	}
 	defer func() { _ = f.Close() }()
 
+	// A reader that never advances its cursor would otherwise loop until the
+	// machine runs out of memory, turning a framing bug into an OOM kill rather
+	// than a test failure. No fixture here writes anywhere near this many
+	// batches, so the bound can only be hit by a stuck reader.
+	const maxBatches = 1 << 20
+
 	r := NewReader(f)
 	var out []Batch
 	for {
@@ -69,6 +70,10 @@ func readAll(t *testing.T, path string) ([]Batch, error) {
 			return out, err
 		}
 		out = append(out, b)
+		if len(out) > maxBatches {
+			t.Fatalf("reader returned more than %d batches without reaching an end of log; "+
+				"it is not advancing past a record", maxBatches)
+		}
 	}
 }
 
@@ -259,35 +264,6 @@ func blockFillerSize(t *testing.T, gap int) int {
 	return filler
 }
 
-// assertPaddingIsZero checks every byte of trailing padding in each full block.
-func assertPaddingIsZero(t *testing.T, path string) {
-	t.Helper()
-
-	data, err := os.ReadFile(path)
-	if err != nil {
-		t.Fatalf("read file: %v", err)
-	}
-
-	for start := 0; start+BlockSize <= len(data); start += BlockSize {
-		block := data[start : start+BlockSize]
-		// Walk the fragments in this block to find where padding begins.
-		off := 0
-		for off+HeaderSize <= BlockSize {
-			length := int(binary.LittleEndian.Uint16(block[off+4 : off+6]))
-			typ := block[off+6]
-			if typ == 0 {
-				break // padding starts here
-			}
-			off += HeaderSize + length
-		}
-		for i := off; i < BlockSize; i++ {
-			if block[i] != 0 {
-				t.Fatalf("padding at block offset %d is %#x, want zero", i, block[i])
-			}
-		}
-	}
-}
-
 // TestChecksumCoversTypeAndPayloadOnly pins the exact covered range from §2.1.
 // A checksum over the wrong bytes still round-trips through its own reader,
 // so only an independent computation catches it.
@@ -392,6 +368,41 @@ func TestTenThousandRandomRecords(t *testing.T) {
 					i, j, len(gr.Value), len(wr.Value))
 			}
 		}
+	}
+}
+
+// TestFragmentsRespectMaxPayloadSize pins the §2.1 consequence of a 7-byte
+// header: no payload may exceed 32761, because a maximal fragment must still
+// leave room for its own header inside the block. A writer that fills the full
+// 32768 round-trips through its own reader and only fails against the spec.
+//
+// The multi-block record guarantees the writer emits a maximal fragment at
+// least once, which is where the off-by-seven lives.
+func TestFragmentsRespectMaxPayloadSize(t *testing.T) {
+	b := &Batch{Sequence: 1}
+	b.AppendSet([]byte("spans-blocks"), bytes.Repeat([]byte{0xC3}, BlockSize*3))
+
+	path := writeBatches(t, []*Batch{b})
+
+	data, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatalf("read file: %v", err)
+	}
+
+	// walkBlock validates every length against MaxPayloadSize and fails on a
+	// fragment that overruns its block.
+	var sawMaximal bool
+	for start := 0; start+BlockSize <= len(data); start += BlockSize {
+		frags, _ := walkBlock(t, data[start:start+BlockSize], start)
+		for _, f := range frags {
+			if f.Length == MaxPayloadSize {
+				sawMaximal = true
+			}
+		}
+	}
+	if !sawMaximal {
+		t.Errorf("no fragment filled a block to MaxPayloadSize (%d); "+
+			"a %d byte value should have produced at least one", MaxPayloadSize, BlockSize*3)
 	}
 }
 

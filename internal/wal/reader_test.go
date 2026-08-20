@@ -218,6 +218,95 @@ func TestCorruptionIsReportedNotSkipped(t *testing.T) {
 	}
 }
 
+// TestCorruptionBetweenValidRecords is the case TestCorruptionIsReportedNotSkipped
+// only appears to cover. That test prepends its malformed framing, so the
+// reader meets the damage as the very first fragment and can reject it before
+// it has read anything — which passes even on a reader that gets the
+// tail-versus-mid distinction wrong for everything after the first fragment.
+//
+// Here the damage sits *between* two healthy records. A reader must report
+// corruption rather than stopping cleanly, because valid data follows: quietly
+// truncating here discards an acknowledged write.
+func TestCorruptionBetweenValidRecords(t *testing.T) {
+	_, before := buildWAL(t, []*Batch{singleSet(1, "before", "value-one")})
+	_, after := buildWAL(t, []*Batch{singleSet(2, "after", "value-two")})
+
+	tests := []struct {
+		name    string
+		damaged []byte
+	}{
+		{
+			name:    "orphaned LAST between valid records",
+			damaged: frame(FragmentLast, []byte("no first")),
+		},
+		{
+			name:    "orphaned MIDDLE between valid records",
+			damaged: frame(FragmentMiddle, []byte("no first")),
+		},
+		{
+			name:    "invalid type between valid records",
+			damaged: withFragmentType(frame(FragmentFull, []byte("bad type")), 9),
+		},
+		{
+			// FIRST then FULL: §2.1 lists this as a truncated record, and the
+			// valid record after it makes it corruption rather than a tail.
+			name:    "FIRST followed by FULL",
+			damaged: frame(FragmentFirst, []byte("never finished")),
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			var data []byte
+			data = append(data, before...)
+			data = append(data, tt.damaged...)
+			data = append(data, after...)
+
+			got, err := readAll(t, writeRaw(t, data))
+			if err == nil {
+				t.Fatalf("recovered %d batches with no error, want corruption reported", len(got))
+			}
+			if isCleanEOF(err) {
+				t.Fatalf("error = %v, want corruption: a valid record follows the damage", err)
+			}
+			if !errors.Is(err, ErrCorrupt) {
+				t.Errorf("error = %v, want it to wrap ErrCorrupt", err)
+			}
+		})
+	}
+}
+
+// TestCleanEndAtBlockBoundary covers the §2.1 read-side rule that fewer than 7
+// bytes left *in a block* is padding to skip, distinct from fewer than 7 bytes
+// left in the file. TestCleanEndOfLog's truncated-header case lands mid-block,
+// so this is the boundary version: the file ends exactly at a point where a
+// reader must recognise the block is exhausted rather than misreading padding
+// as a header.
+func TestCleanEndAtBlockBoundary(t *testing.T) {
+	for gap := 1; gap <= 6; gap++ {
+		t.Run("gap"+itoa(int64(gap)), func(t *testing.T) {
+			// One batch ending gap bytes short of the boundary, so the writer
+			// pads; then cut the file at the boundary itself.
+			filler := blockFillerSize(t, gap)
+			b := &Batch{Sequence: 1}
+			b.AppendSet([]byte("pad"), make([]byte, filler))
+
+			_, data := buildWAL(t, []*Batch{b})
+			if len(data) < BlockSize {
+				t.Fatalf("gap %d: file is %d bytes, want at least one full block", gap, len(data))
+			}
+
+			got, err := readAll(t, writeRaw(t, data[:BlockSize]))
+			if err != nil {
+				t.Fatalf("gap %d: %v, want a clean end of log at the block boundary", gap, err)
+			}
+			if len(got) != 1 {
+				t.Errorf("gap %d: recovered %d batches, want 1", gap, len(got))
+			}
+		})
+	}
+}
+
 // flipByteInFirstPayload damages the first fragment's payload, leaving its
 // header valid so the checksum is what fails.
 func flipByteInFirstPayload(data []byte) []byte {
@@ -398,11 +487,7 @@ func TestTruncationInAnEarlierFileIsCorruption(t *testing.T) {
 	}
 
 	// Chop the earlier file mid-record.
-	data, err := os.ReadFile(first)
-	if err != nil {
-		t.Fatalf("read: %v", err)
-	}
-	if err := os.WriteFile(first, data[:len(data)-2], 0o600); err != nil {
+	if err := truncateBy(first, 2); err != nil {
 		t.Fatalf("truncate: %v", err)
 	}
 
@@ -425,6 +510,132 @@ func TestTruncationInAnEarlierFileIsCorruption(t *testing.T) {
 	}
 	if !errors.Is(err, ErrCorrupt) {
 		t.Errorf("error = %v, want it to wrap ErrCorrupt", err)
+	}
+}
+
+// truncateBy removes n bytes from the end of the file at path. It reports an
+// error rather than slicing blindly: on a file shorter than n bytes the naive
+// form panics with a slice bound instead of failing with a message, which
+// hides which test actually broke.
+func truncateBy(path string, n int) error {
+	data, err := os.ReadFile(path)
+	if err != nil {
+		return fmt.Errorf("read %s: %w", path, err)
+	}
+	if len(data) < n {
+		return fmt.Errorf("%s is %d bytes, cannot remove %d", path, len(data), n)
+	}
+	return os.WriteFile(path, data[:len(data)-n], 0o600)
+}
+
+// TestRecoverAcceptsTruncatedHighestFile is the symmetric half of
+// TestTruncationInAnEarlierFileIsCorruption, and the more dangerous half to
+// get wrong. The highest-numbered WAL is the one that was open when the
+// process died, so a torn record at its tail is the *expected* state of every
+// crashed database.
+//
+// A Recover that propagates the reader's io.EOF outward instead of treating it
+// as a clean stop passes every other test in this file and then refuses to
+// open any database that ever crashed — the "rejecting healthy databases"
+// failure §2.3 names. Nothing else here would catch that.
+func TestRecoverAcceptsTruncatedHighestFile(t *testing.T) {
+	dir := t.TempDir()
+
+	writeOne := func(name string, seq uint64, key string) string {
+		path := filepath.Join(dir, name)
+		f, err := os.Create(path)
+		if err != nil {
+			t.Fatalf("create %s: %v", name, err)
+		}
+		w := NewWriter(f)
+		if _, err := w.Write(singleSet(seq, key, "v")); err != nil {
+			t.Fatalf("write %s: %v", name, err)
+		}
+		if err := w.Close(); err != nil {
+			t.Fatalf("close %s: %v", name, err)
+		}
+		return path
+	}
+
+	writeOne("000001.wal", 10, "durable")
+	second := writeOne("000002.wal", 20, "torn")
+
+	// Chop the highest file mid-record, as a kill -9 mid-write would.
+	if err := truncateBy(second, 3); err != nil {
+		t.Fatalf("truncate: %v", err)
+	}
+
+	var seen []string
+	highest, err := Recover(dir, func(seq uint64, rec Record) error {
+		seen = append(seen, fmt.Sprintf("%d:%s", seq, rec.Key))
+		return nil
+	})
+	if err != nil {
+		t.Fatalf("Recover: %v; a torn tail in the highest file is a clean end of log", err)
+	}
+
+	// The complete earlier file must survive in full; the torn record must not
+	// appear at all.
+	if len(seen) != 1 || seen[0] != "10:durable" {
+		t.Errorf("replayed %v, want exactly [10:durable]", seen)
+	}
+	if highest != 10 {
+		t.Errorf("highest sequence = %d, want 10 — the torn record must not raise it", highest)
+	}
+}
+
+// TestRecoverAtEveryTruncationOfHighestFile extends the every-offset sweep to
+// Recover, since T2.3's done-when is about recovery and not only the reader.
+// Whatever offset the crash landed on, opening the database must succeed and
+// the sequence counter must never exceed what was actually recovered.
+func TestRecoverAtEveryTruncationOfHighestFile(t *testing.T) {
+	if testing.Short() {
+		t.Skip("rewrites a WAL once per byte offset; skipped under -short")
+	}
+
+	// Built once, then replayed at every prefix length.
+	_, complete := buildWAL(t, []*Batch{
+		singleSet(1, "alpha", "one"),
+		singleSet(2, "beta", "two"),
+	})
+
+	for cut := 0; cut <= len(complete); cut++ {
+		dir := t.TempDir()
+		if err := os.WriteFile(filepath.Join(dir, "000001.wal"), complete[:cut], 0o600); err != nil {
+			t.Fatalf("write prefix %d: %v", cut, err)
+		}
+
+		var maxSeen uint64
+		highest, err := Recover(dir, func(seq uint64, _ Record) error {
+			if seq > maxSeen {
+				maxSeen = seq
+			}
+			return nil
+		})
+		if err != nil {
+			t.Fatalf("truncated at %d/%d: Recover: %v; want clean recovery of a prefix",
+				cut, len(complete), err)
+		}
+		if highest != maxSeen {
+			t.Fatalf("truncated at %d: Recover reported highest=%d but replayed at most %d; "+
+				"the counter must reflect what was recovered, not what was written",
+				cut, highest, maxSeen)
+		}
+	}
+}
+
+// TestRecoverOnEmptyDirectory covers first start: no WAL files at all is a
+// fresh database, not an error.
+func TestRecoverOnEmptyDirectory(t *testing.T) {
+	highest, err := Recover(t.TempDir(), func(uint64, Record) error {
+		t.Error("apply called with no WAL files present")
+		return nil
+	})
+	if err != nil {
+		t.Fatalf("Recover on an empty directory: %v, want success", err)
+	}
+	if highest != 0 {
+		t.Errorf("highest sequence = %d, want 0", highest)
 	}
 }
 
@@ -455,12 +666,17 @@ func TestRecoverPropagatesApplyError(t *testing.T) {
 // is read at startup, before anything else works, so a panic here is an
 // unrecoverable database rather than a failed request.
 func FuzzFramingReader(f *testing.F) {
-	_, healthy := buildWAL(&testing.T{}, []*Batch{singleSet(1, "k", "v")})
-	f.Add(healthy)
+	// Seeds are framed directly rather than built through buildWAL: that helper
+	// needs a *testing.T, and a zero-valued one panics inside t.Fatalf instead
+	// of failing cleanly — turning a half-built writer into a confusing panic
+	// during exactly the development window this fuzzer is most useful in.
 	f.Add(frame(FragmentFull, []byte("payload")))
 	f.Add(frame(FragmentFirst, []byte("a")))
 	f.Add(frame(FragmentMiddle, []byte("b")))
 	f.Add(frame(FragmentLast, []byte("c")))
+	// A maximal fragment followed by another record, so the corpus starts with
+	// a well-formed padded block boundary to mutate around.
+	f.Add(append(frame(FragmentFull, make([]byte, MaxPayloadSize)), frame(FragmentFull, []byte("next"))...))
 	f.Add(make([]byte, BlockSize))
 	f.Add([]byte{})
 

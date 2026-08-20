@@ -34,6 +34,17 @@ bench: ## Run all benchmarks without running tests
 fuzz: ## Fuzz the RESP reader for 60s, the T1.1 done-when condition
 	go test ./internal/resp -run '^$$' -fuzz FuzzReadValue -fuzztime 60s
 
+.PHONY: wal-fuzz
+wal-fuzz: ## Fuzz the WAL framing reader for 60s, the T2.3 done-when condition
+	go test ./internal/wal -run '^$$$$' -fuzz FuzzFramingReader -fuzztime 60s
+
+.PHONY: wal-progress
+wal-progress: ## Count remaining T2.1/T2.3 failures
+	@# The memory cap turns a non-advancing reader into a failure, not an OOM kill.
+	@bash -c 'ulimit -v 4000000; go test ./internal/wal -short 2>&1 \
+		| grep -cE "^(---|    ---) FAIL" || true' \
+		| xargs -I{} echo "{} failing (54 at the start of T2.1)"
+
 .PHONY: baseline
 baseline: build ## Run the redis-benchmark baseline and print a benchmarks.md table
 	test/bench/baseline.sh

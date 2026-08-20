@@ -22,14 +22,6 @@ const (
 	FragmentLast   FragmentType = 4
 )
 
-type Writer struct{}
-
-func NewWriter(f *os.File) *Writer              { return nil }
-func (w *Writer) Write(b *Batch) (int64, error) { return 0, nil }
-func (w *Writer) Offset() int64                 { return 0 }
-func (w *Writer) Sync() error                   { return nil }
-func (w *Writer) Close() error                  { return nil }
-
 type Reader struct{}
 
 func NewReader(f *os.File) *Reader     { return nil }

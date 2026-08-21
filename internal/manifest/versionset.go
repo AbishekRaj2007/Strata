@@ -95,10 +95,10 @@ func (vs *VersionSet) SetNextFileNumber(n uint64) {
 // Apply builds a new version from the current one and installs it, returning
 // the installed version.
 //
-// The whole read-modify-write runs under installMu, so concurrent callers
-// serialise rather than each deriving from the same base and one overwriting
-// the other. If the edit would produce a version that violates an invariant,
-// nothing is installed and the current version is left alone.
+// The whole read-modify-write runs under mu, so concurrent callers serialise
+// rather than each deriving from the same base and one overwriting the other.
+// If the edit would produce a version that violates an invariant, nothing is
+// installed and the current version is left alone.
 func (vs *VersionSet) Apply(e *VersionEdit) (*Version, error) {
 	vs.mu.Lock()
 	defer vs.mu.Unlock()

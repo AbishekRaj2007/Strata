@@ -676,6 +676,12 @@ Make reads lock-free using atomic loads on forward pointers, with a single write
 
 ### - [ ] T3.2 — Implement memtable rotation and the immutable queue
 
+> **Built, not closed.** `internal/engine/rotation.go` holds `memtableSet`: the threshold, the atomic swap, the bounded queue, the fresh memtable and WAL opened in one critical section, reads walking active then immutables newest-first, and stall accounting surfaced through `INFO` as `write_stalls` and `write_stall_seconds`. `internal/memtable/memtable.go` defines the `Memtable` interface and the §3.1 comparator. Green under `-race`, 93.1% coverage on `internal/engine`.
+>
+> Both *Done when* conditions have passing tests — `TestSustainedWorkloadRotatesWithReadsCorrect` and `TestBackpressureStallsRatherThanGrowing` — but it stays unticked for two reasons. The workload runs against `sliceTable`, a deliberately naive test double, because T3.1 does not exist; "rotates repeatedly with reads correct throughout" means little until a real concurrent memtable is underneath it. And only the memtable half of the trap is asserted: sequence ranges are contiguous and disjoint across slots, but proving every record went to the WAL belonging to the memtable it was inserted into needs T2.3's reader to parse the files back.
+>
+> Written before T2.3 and T3.1 at the author's direction, out of the usual phase order.
+
 **Effort:** 3–4 h · **Model:** Opus 5 — the atomicity requirements are subtle
 
 Implement the size threshold (default 4 MB, configurable), the atomic swap of the active memtable into a bounded immutable queue, opening a fresh memtable and WAL in the same critical section, and read paths consulting active then immutable newest-first.

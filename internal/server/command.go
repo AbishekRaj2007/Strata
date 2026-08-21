@@ -314,6 +314,22 @@ func (c *conn) cmdInfo(args [][]byte) error {
 	sb.WriteString("# Persistence\r\n")
 	fmt.Fprintf(&sb, "sync_policy:%s\r\n", s.SyncPolicy)
 
+	// Omitted entirely for an engine with no memtable, rather than printed as
+	// zeros: a write-stall count of zero would otherwise read as "flushing is
+	// keeping up" for an engine that cannot stall at all.
+	if m := s.Memtable; m != nil {
+		sb.WriteString("# Memtable\r\n")
+		fmt.Fprintf(&sb, "memtable_size:%d\r\n", m.ActiveSize)
+		fmt.Fprintf(&sb, "immutable_memtables:%d\r\n", m.Immutable)
+		fmt.Fprintf(&sb, "immutable_limit:%d\r\n", m.MaxImmutable)
+		fmt.Fprintf(&sb, "last_sequence:%d\r\n", m.Sequence)
+		// Backpressure is reported as a count and a total rather than a rate,
+		// so a reader can tell one long stall from many short ones -- they
+		// point at different problems.
+		fmt.Fprintf(&sb, "write_stalls:%d\r\n", m.Stalls)
+		fmt.Fprintf(&sb, "write_stall_seconds:%.3f\r\n", m.StallDuration.Seconds())
+	}
+
 	return c.w.WriteBulkString([]byte(sb.String()))
 }
 

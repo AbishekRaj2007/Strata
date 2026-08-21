@@ -12,6 +12,8 @@ Phase 0 is complete: the package skeleton, Makefile, CI, `docs/format.md`, ADR-0
 
 Phase 1 is complete. T1.1 through T1.4 are all closed. T1.3's *Done when* is executed by `make interop`; T1.4's baseline is recorded in `docs/benchmarks.md`. One known gap is carried forward: `make profile` cannot complete because the server is SIGKILLed when CPU profiling runs concurrently with load — diagnosis and ruled-out hypotheses are in the "Profiles" section of `docs/benchmarks.md`. It blocks nothing before T8.2.
 
+Phase 3 was started ahead of Phase 2 at the author's direction. T3.2 is built and green under `-race` — `internal/engine/rotation.go` and the `Memtable` interface in `internal/memtable` — but unticked: it runs against a naive test double because T3.1 does not exist, and the WAL half of its trap needs T2.3's reader. T3.1 and T3.3 remain author-only under §4.
+
 Phase 2 is in progress. **`internal/wal` does not pass — 17 failing tests, all from one cause.** `internal/wal/zz_stub.go` still holds placeholder `Reader` and `Recover` declarations, so recovery replays nothing and the writer round-trip tests spin without reaching end-of-log. T2.1's writer and T2.2's syncer are written; T2.3 is the open task and is on the hand-write list below. Every other package is green, and CI is red until T2.3 lands, which is also what keeps T0.1 unclosable.
 
 T1.1 closed with `internal/resp/resp.go`, AI-implemented against the author-written suite per ADR-009 (the RESP codec is not §4 hand-write surface). `internal/resp/CONTRACT.md` was deleted in d8407c6, superseded by the doc comments on the real code. `internal/wal/CONTRACT.md` is the same kind of document for T2.1 and T2.3 and should go the same way once T2.3 closes.

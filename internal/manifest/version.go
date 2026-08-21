@@ -31,6 +31,13 @@ type Version struct {
 	logNumber      uint64
 	nextFileNumber uint64
 	lastSequence   uint64
+
+	// refs counts the holders of this version, including the VersionSet
+	// itself while the version is current. It is guarded by the owning
+	// VersionSet's mutex rather than being atomic, because it must be read
+	// and modified in the same critical section as the current-version
+	// pointer -- see VersionSet.Acquire.
+	refs int
 }
 
 // NewVersion returns the empty version a replay starts from.

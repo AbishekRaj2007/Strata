@@ -536,9 +536,11 @@ The substantial part is graceful shutdown. On `SIGINT` or `SIGTERM` you must sto
 
 ---
 
-### - [ ] T1.3 — Build command dispatch and the full v1 command set
+### - [x] T1.3 — Build command dispatch and the full v1 command set
 
-> **Green under test, not yet closed.** `internal/server/command.go` and `internal/engine/`, passing under `-race` against the real T1.1 codec. Verifying against it caught a desynchronisation bug the throwaway reference codec had hidden: `validateKeys` reported a rejected key by returning the result of `WriteError`, which is nil on success, so the caller ran the command anyway and wrote a second reply — leaving every later reply on that connection off by one. It now returns `(rejected bool, err error)`. Stays unticked until the `redis-cli` and `go-redis` round trips in *Done when* are actually run.
+> **Closed 2026-08-21.** `internal/server/command.go` and `internal/engine/`, passing under `-race` against the real T1.1 codec. Verifying against it caught a desynchronisation bug the throwaway reference codec had hidden: `validateKeys` reported a rejected key by returning the result of `WriteError`, which is nil on success, so the caller ran the command anyway and wrote a second reply — leaving every later reply on that connection off by one. It now returns `(rejected bool, err error)`.
+>
+> Both halves of *Done when* are now executed by `make interop` (`test/interop/`): `redis-cli` round-trips every command in §7.5, 42 assertions, and an unmodified `go-redis` program passes 36, including `redis.Nil` on an absent key, binary-safe values containing NUL and a bare CRLF, the cursor-driven `Scan` iterator, and reply synchronisation after two protocol errors — the last being a direct regression test for the desynchronisation bug above. go-redis lives in a nested module so it stays out of the root dependency graph.
 
 **Effort:** 3–4 h · **Model:** Sonnet 5
 
@@ -554,9 +556,13 @@ Handle `COMMAND DOCS` with an empty array.
 
 ---
 
-### - [ ] T1.4 — Establish the performance baseline
+### - [x] T1.4 — Establish the performance baseline
 
-> **Harness written, nothing measured.** `test/bench/baseline.sh` and `test/bench/profile.sh`, wired to `make baseline` and `make profile`. `docs/benchmarks.md` stays empty until a run produces real numbers.
+> **Closed 2026-08-21.** `docs/benchmarks.md` carries the baseline table, the stated hardware, and a reproduction command per row. Median of 3 runs each: SET 181,587 ops/sec unpipelined and 1,199,041 at P=16; GET 186,324 and 1,956,947. Two independent invocations agreed within 2%.
+>
+> Fixing the harness to produce those numbers was most of the work. It parsed the `-q` one-liner, which on the installed valkey-benchmark reports p50 and no p99, and it matched on `^SET` against output whose progress lines are carriage-return separated, so nothing matched at all. It now parses the full `Summary:` block. More seriously, it ran `FLUSHDB` before every pass including GET, so the GET rows would have measured the miss path on an empty keyspace and published it under a heading that says GET; the keyspace is now populated and verified before each measured GET pass.
+>
+> **The profile capture is not done** — `make profile` cannot complete, see "Profiles" in `docs/benchmarks.md`. T1.4's *Done when* does not require it, so this task is closed on the table; the profiles are carried as a known gap.
 
 **Effort:** 2–4 h · **Model:** Sonnet 5 for the harness, Opus 5 to interpret the first profiles
 

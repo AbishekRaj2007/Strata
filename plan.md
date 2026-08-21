@@ -743,6 +743,12 @@ The ordering is a durability argument you must be able to state: the WAL may onl
 
 ### - [ ] T4.1 — Implement the version and manifest subsystem
 
+> **Built above the log, blocked at it.** `internal/manifest/` holds `FileMetadata`, `VersionEdit` encoding and decoding to §4, the immutable `Version` with its level invariants, `Apply`, `VersionSet` with atomic installation, and the atomic `CURRENT` write. Green under `-race`.
+>
+> The manifest *log* is not written. §4 has it reuse the WAL block framing exactly, and `wal.Writer.Write` takes a `*wal.Batch` rather than raw bytes, so appending an encoded edit needs a framing-level entry point — and replay needs T2.3's reader. Both sit on §4 hand-write surface, so they are the author's to add.
+>
+> Consequently the *Done when* is only half met: the 200-file, four-level reconstruction passes through `Apply` (`TestReplayOf200FilesAcrossFourLevels`), but "a manifest truncated mid-edit recovers to the last complete edit" cannot be tested without the log.
+
 **Effort:** 5–6 h · **Model:** Opus 5 for the design; write the implementation yourself
 
 Implement `FileMetadata` (file number, size, smallest and largest key, sequence range), the immutable `Version` holding per-level file lists, `VersionEdit` encoding and decoding, and `VersionSet` applying edits to produce new versions. Implement manifest replay on startup and the `CURRENT` file written atomically via write-temp-then-rename-then-fsync-directory.
@@ -756,6 +762,10 @@ The immutability of `Version` is the whole design. Grasping *why* a mutable list
 ---
 
 ### - [ ] T4.2 — Implement file lifecycle and reference counting
+
+> **Built; *Done when* met at the version layer.** `internal/manifest/refcount.go` and `cleanup.go`: references on both versions and files, `Acquire`/`Release`, obsolete collection, `DeleteObsolete`, and the §4.1 startup orphan sweep. `TestReadersNeverTouchADeletedFile` runs 100 readers against 200 compactions with a fault-injection layer that panics on any read of a deleted file — 110,336 reads, clean under `-race`.
+>
+> The suite was mutation-tested: releasing the old version's file references before the new version takes its own makes it fail with named files. Unticked because the readers read a tracker rather than real SSTables, which do not exist until T3.4.
 
 **Effort:** 3–4 h · **Model:** Fable 5 — lifetime bugs here are the hardest to reason about
 

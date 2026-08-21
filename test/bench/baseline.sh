@@ -22,9 +22,16 @@ readonly OUT="${1:-/dev/stdout}"
 # best-of-N, because a best-of-N number is not one anybody else can reproduce.
 readonly RUNS="${STRATA_BENCH_RUNS:-3}"
 
-readonly REQUESTS="${STRATA_BENCH_REQUESTS:-100000}"
+# A run needs to last long enough that connection setup is not a visible part
+# of it. At Phase 1 speeds 100k requests finish in well under a second.
+readonly REQUESTS="${STRATA_BENCH_REQUESTS:-1000000}"
 readonly CLIENTS="${STRATA_BENCH_CLIENTS:-50}"
 readonly VALUE_SIZE="${STRATA_BENCH_VALUE_SIZE:-64}"
+
+# Without -r, redis-benchmark hammers the single literal key
+# "key:__rand_int__". That measures one hot map entry, which is not a
+# keyspace. -r spreads the load over KEYSPACE distinct keys.
+readonly KEYSPACE="${STRATA_BENCH_KEYSPACE:-10000}"
 
 die() { echo "error: $*" >&2; exit 1; }
 
@@ -42,10 +49,19 @@ kernel_ver() { uname -sr; }
 go_version() { go version | awk '{print $3}'; }
 
 disk_model() {
-	local src
+	local src model
 	src=$(findmnt -no SOURCE --target "${REPO_ROOT}" 2>/dev/null || echo "")
 	[[ -z "${src}" ]] && { echo "unknown"; return; }
-	lsblk -no MODEL "${src}" 2>/dev/null | head -1 | sed 's/^ *//;s/ *$//' || echo "unknown"
+
+	# MODEL lives on the physical device, not the partition: asking about
+	# nvme0n1p7 returns an empty string rather than an error, which reaches the
+	# table as a blank cell. Resolve to the parent device first.
+	local parent
+	parent=$(lsblk -no PKNAME "${src}" 2>/dev/null | head -1 | tr -d ' ')
+	[[ -n "${parent}" ]] && src="/dev/${parent}"
+
+	model=$(lsblk -dno MODEL "${src}" 2>/dev/null | head -1 | sed 's/^ *//;s/ *$//')
+	echo "${model:-unknown}"
 }
 
 filesystem() {
@@ -70,6 +86,12 @@ cpu_governor() {
 }
 
 load_average() { awk '{print $1", "$2", "$3}' /proc/loadavg; }
+
+# The load generator is part of the measurement. redis-benchmark and
+# valkey-benchmark are not interchangeable -- they differ in default pipelining
+# behaviour and in what -q reports -- so a row is only reproducible if the
+# reader knows which one produced it.
+bench_tool() { redis-benchmark --version 2>&1 | head -1; }
 
 # --- server lifecycle ------------------------------------------------------
 
@@ -105,25 +127,35 @@ start_server() {
 run_one() {
 	local test_name="$1" pipeline="$2"
 	local args=(-p "${PORT}" -t "${test_name}" -n "${REQUESTS}" -c "${CLIENTS}"
-	            -d "${VALUE_SIZE}" -q --precision 3)
+	            -d "${VALUE_SIZE}" -r "${KEYSPACE}" --precision 3)
 	[[ "${pipeline}" -gt 1 ]] && args+=(-P "${pipeline}")
 
-	# stderr is kept so a failing benchmark says why on the terminal.
+	# The full report is parsed rather than the -q one-liner. -q emits p50 only
+	# on valkey-benchmark, and a p99 the tool never printed is exactly the kind
+	# of number this project must not publish. The Summary block carries
+	# throughput and the full percentile row, and is identical across
+	# redis-benchmark 6.2+ and valkey-benchmark.
 	#
 	# Failure is signalled by the FAILED sentinel rather than by calling die,
 	# because run_one is invoked inside a command substitution: exit there ends
 	# only the subshell, and the caller would carry on with empty values. The
 	# caller checks for the sentinel.
+	#
+	# Progress output is separated by carriage returns, so without the tr the
+	# whole run collapses into one line and nothing matches.
 	local output
-	output=$(redis-benchmark "${args[@]}" | grep -i "^${test_name}" || true)
-	[[ -z "${output}" ]] && { echo "FAILED no-result-line"; return; }
+	output=$(redis-benchmark "${args[@]}" 2>/dev/null | tr '\r' '\n') || true
+	[[ -z "${output}" ]] && { echo "FAILED no-output"; return; }
 
-	# redis-benchmark -q line:
-	#   SET: 123456.78 requests per second, p50=0.100 msec, p99=0.500 msec
-	local rps p50 p99
-	rps=$(sed -n 's/.*[: ]\([0-9.]*\) requests per second.*/\1/p' <<<"${output}")
-	p50=$(sed -n 's/.*p50=\([0-9.]*\).*/\1/p' <<<"${output}")
-	p99=$(sed -n 's/.*p99=\([0-9.]*\).*/\1/p' <<<"${output}")
+	#   throughput summary: 123456.78 requests per second
+	#   latency summary (msec):
+	#           avg       min       p50       p95       p99       max
+	#         0.031     0.008     0.031     0.047     0.055     0.271
+	local rps latency_row p50 p99
+	rps=$(sed -n 's/.*throughput summary: *\([0-9.]*\) requests per second.*/\1/p' <<<"${output}")
+	latency_row=$(grep -A1 -E '^ *avg  *min  *p50' <<<"${output}" | tail -1)
+	p50=$(awk '{print $3}' <<<"${latency_row}")
+	p99=$(awk '{print $5}' <<<"${latency_row}")
 
 	# A parse failure means redis-benchmark changed its output format. Refusing
 	# to guess is the point: a defaulted zero would reach docs/benchmarks.md as
@@ -146,6 +178,25 @@ spread() {
 	printf '%s–%s' "${sorted[0]}" "${sorted[-1]}"
 }
 
+# prepare puts the keyspace in the state the workload about to be measured
+# assumes. Every run starts from the same state, so run 3 measures what run 1
+# did rather than the accumulated residue of the two before it.
+prepare() {
+	local test_name="$1"
+	redis-cli -p "${PORT}" FLUSHDB >/dev/null 2>&1 || true
+
+	# A GET pass against an empty keyspace measures the miss path at full
+	# speed and publishes it in a row labelled GET. Populate the keys the
+	# measured pass will ask for. 10x the keyspace in writes because -r picks
+	# uniformly at random: one write per key leaves roughly a third of them
+	# never written.
+	if [[ "${test_name}" == "get" ]]; then
+		redis-benchmark -p "${PORT}" -t set -n "$(( KEYSPACE * 10 ))" \
+			-c "${CLIENTS}" -d "${VALUE_SIZE}" -r "${KEYSPACE}" -q \
+			>/dev/null 2>&1 || true
+	fi
+}
+
 # run_workload prints one markdown table row: the median of RUNS runs, with
 # the observed range so a reader can see the variance rather than trust a
 # single figure.
@@ -156,7 +207,7 @@ run_workload() {
 	echo "  ${label} (pipeline=${pipeline})..." >&2
 
 	for run in $(seq 1 "${RUNS}"); do
-		redis-cli -p "${PORT}" FLUSHDB >/dev/null 2>&1 || true
+		prepare "${test_name}"
 
 		read -r rps p50 p99 <<<"$(run_one "${test_name}" "${pipeline}")"
 		[[ "${rps}" == "FAILED" ]] && die "${test_name} (pipeline=${pipeline}) run ${run}: ${p50}; the server may have died mid-run"
@@ -168,7 +219,7 @@ run_workload() {
 	local pipe_label="no"
 	[[ "${pipeline}" -gt 1 ]] && pipe_label="yes (P=${pipeline})"
 
-	local cmd="redis-benchmark -p ${PORT} -t ${test_name} -n ${REQUESTS} -c ${CLIENTS} -d ${VALUE_SIZE} -q"
+	local cmd="redis-benchmark -p ${PORT} -t ${test_name} -n ${REQUESTS} -c ${CLIENTS} -d ${VALUE_SIZE} -r ${KEYSPACE} --precision 3"
 	[[ "${pipeline}" -gt 1 ]] && cmd+=" -P ${pipeline}"
 
 	printf '| %s | %s | %s ops/sec | %s ms | %s ms | `%s` |\n' \
@@ -198,6 +249,7 @@ main() {
 		printf '| Filesystem | %s |\n' "$(filesystem)"
 		printf '| Kernel | %s |\n' "$(kernel_ver)"
 		printf '| Go version | %s |\n' "$(go_version)"
+		printf '| Load generator | %s |\n' "$(bench_tool)"
 		echo
 		echo "**Conditions at run time**"
 		echo
@@ -209,8 +261,12 @@ main() {
 		echo
 		echo "## Baseline — in-memory map (T1.4)"
 		echo
-		printf 'Median of %d runs, %d requests, %d clients, %d-byte values.\n' \
-			"${RUNS}" "${REQUESTS}" "${CLIENTS}" "${VALUE_SIZE}"
+		printf 'Median of %d runs, %d requests, %d clients, %d-byte values, %d-key keyspace.\n' \
+			"${RUNS}" "${REQUESTS}" "${CLIENTS}" "${VALUE_SIZE}" "${KEYSPACE}"
+		echo
+		echo 'GET rows are measured against a populated keyspace, so they are'
+		echo 'hit-path numbers. The absent-key path is a separate measurement'
+		echo 'and is not in this table.'
 		echo
 		echo "| Workload | Pipelined | Throughput | p50 | p99 | Command |"
 		echo "|---|---|---|---|---|---|"

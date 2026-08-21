@@ -53,6 +53,12 @@ baseline: build ## Run the redis-benchmark baseline and print a benchmarks.md ta
 profile: build ## Capture CPU and heap profiles under load into docs/profiles/
 	test/bench/profile.sh
 
+# Not part of "test": the go-redis half is a nested module and needs network
+# access on first run. See test/interop/README.md.
+.PHONY: interop
+interop: build ## Drive the server with redis-cli and go-redis (T1.3 done-when)
+	test/interop/run.sh
+
 .PHONY: lint
 lint: ## Run golangci-lint
 	golangci-lint run

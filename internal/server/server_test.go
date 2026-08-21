@@ -19,10 +19,17 @@ import (
 // cleanup that shuts it down, so no test leaks a listener into the next.
 func newTestServer(t *testing.T) *Server {
 	t.Helper()
+	return newTestServerWith(t, engine.NewMemory())
+}
+
+// newTestServerWith starts a server backed by a specific engine, for tests
+// that need an engine reporting state the map cannot.
+func newTestServerWith(t *testing.T, eng engine.Engine) *Server {
+	t.Helper()
 
 	s, err := New(Config{
 		Addr:    "127.0.0.1:0",
-		Engine:  engine.NewMemory(),
+		Engine:  eng,
 		Logger:  log.Discard(),
 		Version: "test",
 	})
@@ -271,6 +278,62 @@ func TestInfo(t *testing.T) {
 
 	body := string(v.Bytes)
 	for _, want := range []string{"strata_version:test", "connected_clients:", "db0:keys="} {
+		if !strings.Contains(body, want) {
+			t.Errorf("INFO missing %q in:\n%s", want, body)
+		}
+	}
+
+	// The map engine has no memtable, so the section must be absent rather
+	// than reported as zeros.
+	if strings.Contains(body, "# Memtable") {
+		t.Errorf("INFO reported a memtable for an engine that has none:\n%s", body)
+	}
+}
+
+// memtableEngine reports memtable statistics so the INFO rendering of
+// backpressure can be tested before an LSM engine exists to produce them.
+type memtableEngine struct {
+	engine.Engine
+	stats engine.RotationStats
+}
+
+func (m memtableEngine) Stats() (engine.Stats, error) {
+	s, err := m.Engine.Stats()
+	if err != nil {
+		return s, err
+	}
+	s.Memtable = &m.stats
+	return s, nil
+}
+
+// TestInfoReportsBackpressure covers T3.2's requirement that a write stall is
+// visible rather than merely survivable. A stall that nobody can observe is
+// indistinguishable from a hang.
+func TestInfoReportsBackpressure(t *testing.T) {
+	eng := memtableEngine{
+		Engine: engine.NewMemory(),
+		stats: engine.RotationStats{
+			ActiveSize:    4096,
+			Immutable:     2,
+			MaxImmutable:  2,
+			Stalls:        7,
+			StallDuration: 1500 * time.Millisecond,
+			Sequence:      42,
+		},
+	}
+
+	c := dial(t, newTestServerWith(t, eng))
+
+	body := string(c.do("INFO").Bytes)
+	for _, want := range []string{
+		"# Memtable",
+		"memtable_size:4096",
+		"immutable_memtables:2",
+		"immutable_limit:2",
+		"last_sequence:42",
+		"write_stalls:7",
+		"write_stall_seconds:1.500",
+	} {
 		if !strings.Contains(body, want) {
 			t.Errorf("INFO missing %q in:\n%s", want, body)
 		}

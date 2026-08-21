@@ -42,6 +42,13 @@ type Stats struct {
 	// SyncPolicy names the WAL durability mode in force: always, interval,
 	// or never. Empty until the WAL exists (T2.2).
 	SyncPolicy string
+
+	// Memtable reports the memtable set's state, or nil for an engine that
+	// has no memtable. A pointer rather than a value because "this engine
+	// keeps no memtable" and "the memtable is empty" are different facts, and
+	// INFO must not print a write-stall count for an engine that cannot
+	// stall.
+	Memtable *RotationStats
 }
 
 // ScanResult is one page of a Scan. Cursor is the value to pass to the next

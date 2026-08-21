@@ -536,9 +536,11 @@ The substantial part is graceful shutdown. On `SIGINT` or `SIGTERM` you must sto
 
 ---
 
-### - [ ] T1.3 — Build command dispatch and the full v1 command set
+### - [x] T1.3 — Build command dispatch and the full v1 command set
 
-> **Green under test, not yet closed.** `internal/server/command.go` and `internal/engine/`, passing under `-race` against the real T1.1 codec. Verifying against it caught a desynchronisation bug the throwaway reference codec had hidden: `validateKeys` reported a rejected key by returning the result of `WriteError`, which is nil on success, so the caller ran the command anyway and wrote a second reply — leaving every later reply on that connection off by one. It now returns `(rejected bool, err error)`. Stays unticked until the `redis-cli` and `go-redis` round trips in *Done when* are actually run.
+> **Closed 2026-08-21.** `internal/server/command.go` and `internal/engine/`, passing under `-race` against the real T1.1 codec. Verifying against it caught a desynchronisation bug the throwaway reference codec had hidden: `validateKeys` reported a rejected key by returning the result of `WriteError`, which is nil on success, so the caller ran the command anyway and wrote a second reply — leaving every later reply on that connection off by one. It now returns `(rejected bool, err error)`.
+>
+> Both halves of *Done when* are now executed by `make interop` (`test/interop/`): `redis-cli` round-trips every command in §7.5, 42 assertions, and an unmodified `go-redis` program passes 36, including `redis.Nil` on an absent key, binary-safe values containing NUL and a bare CRLF, the cursor-driven `Scan` iterator, and reply synchronisation after two protocol errors — the last being a direct regression test for the desynchronisation bug above. go-redis lives in a nested module so it stays out of the root dependency graph.
 
 **Effort:** 3–4 h · **Model:** Sonnet 5
 
@@ -554,9 +556,13 @@ Handle `COMMAND DOCS` with an empty array.
 
 ---
 
-### - [ ] T1.4 — Establish the performance baseline
+### - [x] T1.4 — Establish the performance baseline
 
-> **Harness written, nothing measured.** `test/bench/baseline.sh` and `test/bench/profile.sh`, wired to `make baseline` and `make profile`. `docs/benchmarks.md` stays empty until a run produces real numbers.
+> **Closed 2026-08-21.** `docs/benchmarks.md` carries the baseline table, the stated hardware, and a reproduction command per row. Median of 3 runs each: SET 181,587 ops/sec unpipelined and 1,199,041 at P=16; GET 186,324 and 1,956,947. Two independent invocations agreed within 2%.
+>
+> Fixing the harness to produce those numbers was most of the work. It parsed the `-q` one-liner, which on the installed valkey-benchmark reports p50 and no p99, and it matched on `^SET` against output whose progress lines are carriage-return separated, so nothing matched at all. It now parses the full `Summary:` block. More seriously, it ran `FLUSHDB` before every pass including GET, so the GET rows would have measured the miss path on an empty keyspace and published it under a heading that says GET; the keyspace is now populated and verified before each measured GET pass.
+>
+> **The profile capture is not done** — `make profile` cannot complete, see "Profiles" in `docs/benchmarks.md`. T1.4's *Done when* does not require it, so this task is closed on the table; the profiles are carried as a known gap.
 
 **Effort:** 2–4 h · **Model:** Sonnet 5 for the harness, Opus 5 to interpret the first profiles
 
@@ -670,6 +676,12 @@ Make reads lock-free using atomic loads on forward pointers, with a single write
 
 ### - [ ] T3.2 — Implement memtable rotation and the immutable queue
 
+> **Built, not closed.** `internal/engine/rotation.go` holds `memtableSet`: the threshold, the atomic swap, the bounded queue, the fresh memtable and WAL opened in one critical section, reads walking active then immutables newest-first, and stall accounting surfaced through `INFO` as `write_stalls` and `write_stall_seconds`. `internal/memtable/memtable.go` defines the `Memtable` interface and the §3.1 comparator. Green under `-race`, 93.1% coverage on `internal/engine`.
+>
+> Both *Done when* conditions have passing tests — `TestSustainedWorkloadRotatesWithReadsCorrect` and `TestBackpressureStallsRatherThanGrowing` — but it stays unticked for two reasons. The workload runs against `sliceTable`, a deliberately naive test double, because T3.1 does not exist; "rotates repeatedly with reads correct throughout" means little until a real concurrent memtable is underneath it. And only the memtable half of the trap is asserted: sequence ranges are contiguous and disjoint across slots, but proving every record went to the WAL belonging to the memtable it was inserted into needs T2.3's reader to parse the files back.
+>
+> Written before T2.3 and T3.1 at the author's direction, out of the usual phase order.
+
 **Effort:** 3–4 h · **Model:** Opus 5 — the atomicity requirements are subtle
 
 Implement the size threshold (default 4 MB, configurable), the atomic swap of the active memtable into a bounded immutable queue, opening a fresh memtable and WAL in the same critical section, and read paths consulting active then immutable newest-first.
@@ -731,6 +743,12 @@ The ordering is a durability argument you must be able to state: the WAL may onl
 
 ### - [ ] T4.1 — Implement the version and manifest subsystem
 
+> **Built above the log, blocked at it.** `internal/manifest/` holds `FileMetadata`, `VersionEdit` encoding and decoding to §4, the immutable `Version` with its level invariants, `Apply`, `VersionSet` with atomic installation, and the atomic `CURRENT` write. Green under `-race`.
+>
+> The manifest *log* is not written. §4 has it reuse the WAL block framing exactly, and `wal.Writer.Write` takes a `*wal.Batch` rather than raw bytes, so appending an encoded edit needs a framing-level entry point — and replay needs T2.3's reader. Both sit on §4 hand-write surface, so they are the author's to add.
+>
+> Consequently the *Done when* is only half met: the 200-file, four-level reconstruction passes through `Apply` (`TestReplayOf200FilesAcrossFourLevels`), but "a manifest truncated mid-edit recovers to the last complete edit" cannot be tested without the log.
+
 **Effort:** 5–6 h · **Model:** Opus 5 for the design; write the implementation yourself
 
 Implement `FileMetadata` (file number, size, smallest and largest key, sequence range), the immutable `Version` holding per-level file lists, `VersionEdit` encoding and decoding, and `VersionSet` applying edits to produce new versions. Implement manifest replay on startup and the `CURRENT` file written atomically via write-temp-then-rename-then-fsync-directory.
@@ -744,6 +762,10 @@ The immutability of `Version` is the whole design. Grasping *why* a mutable list
 ---
 
 ### - [ ] T4.2 — Implement file lifecycle and reference counting
+
+> **Built; *Done when* met at the version layer.** `internal/manifest/refcount.go` and `cleanup.go`: references on both versions and files, `Acquire`/`Release`, obsolete collection, `DeleteObsolete`, and the §4.1 startup orphan sweep. `TestReadersNeverTouchADeletedFile` runs 100 readers against 200 compactions with a fault-injection layer that panics on any read of a deleted file — 110,336 reads, clean under `-race`.
+>
+> The suite was mutation-tested: releasing the old version's file references before the new version takes its own makes it fail with named files. Unticked because the readers read a tracker rather than real SSTables, which do not exist until T3.4.
 
 **Effort:** 3–4 h · **Model:** Fable 5 — lifetime bugs here are the hardest to reason about
 

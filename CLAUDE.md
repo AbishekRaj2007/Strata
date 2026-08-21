@@ -10,11 +10,17 @@ When plan.md and this file disagree, plan.md wins. When the code and plan.md dis
 
 Phase 0 is complete: the package skeleton, Makefile, CI, `docs/format.md`, ADR-001 through ADR-008, and the `strata-cli` / `strata-server` binaries all exist. T0.1 stays unticked in plan.md until CI is confirmed green on a push.
 
-Phase 1 is in progress and **the tree builds and is green under `-race`**. T1.1 and T1.2 are complete. T1.3 and T1.4 are written and passing, but stay unticked until their *Done when* conditions are actually exercised: the `redis-cli` and `go-redis` round trips for T1.3, and a recorded baseline run for T1.4.
+Phase 1 is complete. T1.1 through T1.4 are all closed. T1.3's *Done when* is executed by `make interop`; T1.4's baseline is recorded in `docs/benchmarks.md`. One known gap is carried forward: `make profile` cannot complete because the server is SIGKILLed when CPU profiling runs concurrently with load — diagnosis and ruled-out hypotheses are in the "Profiles" section of `docs/benchmarks.md`. It blocks nothing before T8.2.
 
-T1.1 closed with `internal/resp/resp.go`, AI-implemented against the author-written suite per ADR-009 (the RESP codec is not §4 hand-write surface). `internal/resp/CONTRACT.md` is superseded by the doc comments on the real code and should be deleted.
+Phase 4's `internal/manifest` is built above the log layer: `FileMetadata`, the §4 edit codec, the immutable `Version`, `Apply`, `VersionSet` with atomic installation, reference counting, `CURRENT`, and the orphan sweep. Green under `-race`. T4.1 and T4.2 stay unticked — the manifest *log* reuses the WAL block framing per §4, so appending and replaying edits waits on T2.3 and on a framing entry point that takes raw bytes. T4.4 is author-only under §4.
 
-T0.1 is now unblockable — its done-when is green CI on a push, which was unreachable while the tree failed to compile.
+Phase 3 was started ahead of Phase 2 at the author's direction. T3.2 is built and green under `-race` — `internal/engine/rotation.go` and the `Memtable` interface in `internal/memtable` — but unticked: it runs against a naive test double because T3.1 does not exist, and the WAL half of its trap needs T2.3's reader. T3.1 and T3.3 remain author-only under §4.
+
+Phase 2 is in progress. **`internal/wal` does not pass — 17 failing tests, all from one cause.** `internal/wal/zz_stub.go` still holds placeholder `Reader` and `Recover` declarations, so recovery replays nothing and the writer round-trip tests spin without reaching end-of-log. T2.1's writer and T2.2's syncer are written; T2.3 is the open task and is on the hand-write list below. Every other package is green, and CI is red until T2.3 lands, which is also what keeps T0.1 unclosable.
+
+T1.1 closed with `internal/resp/resp.go`, AI-implemented against the author-written suite per ADR-009 (the RESP codec is not §4 hand-write surface). `internal/resp/CONTRACT.md` was deleted in d8407c6, superseded by the doc comments on the real code. `internal/wal/CONTRACT.md` is the same kind of document for T2.1 and T2.3 and should go the same way once T2.3 closes.
+
+T0.1's done-when is green CI on a push. The tree compiles, so the blocker is now the failing `internal/wal` suite rather than a build error; T2.3 closing is what makes T0.1 reachable.
 
 The engine interface in `internal/engine/engine.go` is final, per T1.3. `Memory` is a temporary map behind it and is replaced in Phase 3 without call sites changing.
 

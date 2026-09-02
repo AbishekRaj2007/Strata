@@ -694,7 +694,7 @@ The bounded queue matters. If flushing falls behind, writes must stall with a cl
 
 ---
 
-### - [ ] T3.3 — Implement the SSTable block encoder and decoder
+### - [x] T3.3 — Implement the SSTable block encoder and decoder
 
 **Effort:** 4–5 h · **Model:** write it yourself; Opus 5 to review boundary handling
 

@@ -660,7 +660,7 @@ Make the kill point targetable rather than only random — you will need to kill
 **Goal:** exceed RAM. Sorted, immutable data lands on disk.
 **Total effort:** 20–26 hours.
 
-### - [ ] T3.1 — Implement the concurrent skip list
+### - [x] T3.1 — Implement the concurrent skip list
 
 **Effort:** 5–6 h · **Model:** write it entirely yourself; Opus 5 to review memory ordering afterwards
 

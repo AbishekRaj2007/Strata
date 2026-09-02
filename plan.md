@@ -595,7 +595,7 @@ So it is a policy choice, and you implement all three:
 | `interval` | Lose at most the last N ms | Background sync every N ms; near-zero |
 | `never` | Survives process crash, not machine crash | Free |
 
-### - [ ] T2.1 — Implement WAL record framing and the writer
+### - [x] T2.1 — Implement WAL record framing and the writer
 
 **Effort:** 4–5 h · **Model:** write it yourself; Fable 5 to attack your framing for gaps
 
@@ -625,7 +625,7 @@ Design it as a leader-follower handoff — arriving writers queue, the first bec
 
 ---
 
-### - [ ] T2.3 — Implement the WAL reader and startup recovery
+### - [x] T2.3 — Implement the WAL reader and startup recovery
 
 **Effort:** 3–4 h · **Model:** write it yourself; Opus 5 to review the failure taxonomy
 

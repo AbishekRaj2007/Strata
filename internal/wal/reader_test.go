@@ -107,6 +107,12 @@ func TestTruncateAtEveryOffset(t *testing.T) {
 func TestCleanEndOfLog(t *testing.T) {
 	_, healthy := buildWAL(t, []*Batch{singleSet(1, "k", "v")})
 
+	// The checksum-failure case damages the final fragment in place rather
+	// than appending garbage after an intact record, so it needs its own
+	// two-record fixture: corrupting the tail of a single-record log would
+	// leave nothing valid to recover at all.
+	_, twoRecords := buildWAL(t, []*Batch{singleSet(1, "k", "v"), singleSet(2, "k2", "v2")})
+
 	tests := []struct {
 		name string
 		data []byte
@@ -123,7 +129,7 @@ func TestCleanEndOfLog(t *testing.T) {
 		},
 		{
 			name: "checksum failure in the final fragment",
-			data: corruptLastFragment(healthy),
+			data: corruptLastFragment(twoRecords),
 		},
 		{
 			// A FIRST fragment whose LAST never arrived.
@@ -285,13 +291,18 @@ func TestCorruptionBetweenValidRecords(t *testing.T) {
 func TestCleanEndAtBlockBoundary(t *testing.T) {
 	for gap := 1; gap <= 6; gap++ {
 		t.Run("gap"+itoa(int64(gap)), func(t *testing.T) {
-			// One batch ending gap bytes short of the boundary, so the writer
-			// pads; then cut the file at the boundary itself.
+			// The writer only zero-pads a block when a later fragment needs
+			// room the block doesn't have (Close leaves a lone final block
+			// short, per TestOffsetTracksBytesWritten) -- so a second batch
+			// is what actually forces the first block to be padded and
+			// rolled, giving a genuine full block to cut at.
 			filler := blockFillerSize(t, gap)
-			b := &Batch{Sequence: 1}
-			b.AppendSet([]byte("pad"), make([]byte, filler))
+			first := &Batch{Sequence: 1}
+			first.AppendSet([]byte("pad"), make([]byte, filler))
+			second := &Batch{Sequence: 2}
+			second.AppendSet([]byte("after"), []byte("boundary"))
 
-			_, data := buildWAL(t, []*Batch{b})
+			_, data := buildWAL(t, []*Batch{first, second})
 			if len(data) < BlockSize {
 				t.Fatalf("gap %d: file is %d bytes, want at least one full block", gap, len(data))
 			}

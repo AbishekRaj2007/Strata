@@ -83,7 +83,7 @@ func (w *Writer) Write(b *Batch) (int64, error) {
 		w.buf[pos+6] = byte(fragmentType(first, last))
 		copy(w.buf[pos+7:], payload[:n])
 
-		sw.blockPos += HeaderSize + n
+		w.blockPos += HeaderSize + n
 		w.offset += int64(HeaderSize + n)
 
 		binary.LittleEndian.PutUint32(w.buf[pos:pos+4],

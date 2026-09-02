@@ -674,13 +674,13 @@ Make reads lock-free using atomic loads on forward pointers, with a single write
 
 ---
 
-### - [ ] T3.2 — Implement memtable rotation and the immutable queue
+### - [x] T3.2 — Implement memtable rotation and the immutable queue
 
-> **Built, not closed.** `internal/engine/rotation.go` holds `memtableSet`: the threshold, the atomic swap, the bounded queue, the fresh memtable and WAL opened in one critical section, reads walking active then immutables newest-first, and stall accounting surfaced through `INFO` as `write_stalls` and `write_stall_seconds`. `internal/memtable/memtable.go` defines the `Memtable` interface and the §3.1 comparator. Green under `-race`, 93.1% coverage on `internal/engine`.
+> **Done.** `internal/engine/rotation.go` holds `memtableSet`: the threshold, the atomic swap, the bounded queue, the fresh memtable and WAL opened in one critical section, reads walking active then immutables newest-first, and stall accounting surfaced through `INFO` as `write_stalls` and `write_stall_seconds`. `internal/memtable/skiplist.go` (T3.1) is now wired in as the `New` hook, replacing the `sliceTable` test double everywhere. Green under `-race`, 93.1% coverage on `internal/engine`.
 >
-> Both *Done when* conditions have passing tests — `TestSustainedWorkloadRotatesWithReadsCorrect` and `TestBackpressureStallsRatherThanGrowing` — but it stays unticked for two reasons. The workload runs against `sliceTable`, a deliberately naive test double, because T3.1 does not exist; "rotates repeatedly with reads correct throughout" means little until a real concurrent memtable is underneath it. And only the memtable half of the trap is asserted: sequence ranges are contiguous and disjoint across slots, but proving every record went to the WAL belonging to the memtable it was inserted into needs T2.3's reader to parse the files back.
+> Both *Done when* conditions pass against the real skip list: `TestSustainedWorkloadRotatesWithReadsCorrect` and `TestBackpressureStallsRatherThanGrowing`. The trap is now fully asserted: `TestSequenceRangesAreDisjointAcrossSlots` covers the memtable half, and `TestEachRecordLandsInItsMemtablesWAL` covers the WAL half by parsing each slot's WAL file back with T2.3's reader and checking its sequence set against the memtable's.
 >
-> Written before T2.3 and T3.1 at the author's direction, out of the usual phase order.
+> Written before T2.3 and T3.1 at the author's direction, out of the usual phase order; closed once both landed.
 
 **Effort:** 3–4 h · **Model:** Opus 5 — the atomicity requirements are subtle
 

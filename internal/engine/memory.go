@@ -85,7 +85,7 @@ func (m *Memory) Delete(key []byte) (bool, error) {
 // O(n log n) per page and deliberately temporary: the LSM engine scans an
 // already-ordered structure and encodes the last key returned instead
 // (plan.md §7.5).
-func (m *Memory) Scan(cursor uint64, count int) (ScanResult, error) {
+func (m *Memory) Scan(cursor []byte, count int) (ScanResult, error) {
 	m.mu.RLock()
 	defer m.mu.RUnlock()
 	if m.closed {
@@ -102,23 +102,35 @@ func (m *Memory) Scan(cursor uint64, count int) (ScanResult, error) {
 	}
 	sort.Strings(keys)
 
-	if cursor >= uint64(len(keys)) {
+	// The cursor is the last key returned, so the next page begins at the
+	// first key strictly greater than it. Resolving it by search rather than
+	// by remembered offset is what makes a cursor survive the map changing
+	// between calls.
+	start := 0
+	if cursor != nil {
+		start = sort.SearchStrings(keys, string(cursor))
+		for start < len(keys) && keys[start] <= string(cursor) {
+			start++
+		}
+	}
+	if start >= len(keys) {
 		return ScanResult{}, nil
 	}
 
-	end := cursor + uint64(count)
-	if end > uint64(len(keys)) {
-		end = uint64(len(keys))
+	end := start + count
+	if end > len(keys) {
+		end = len(keys)
 	}
 
-	page := make([][]byte, 0, end-cursor)
-	for _, k := range keys[cursor:end] {
+	page := make([][]byte, 0, end-start)
+	for _, k := range keys[start:end] {
 		page = append(page, []byte(k))
 	}
 
-	next := end
-	if next >= uint64(len(keys)) {
-		next = 0
+	// A nil cursor means the iteration is complete.
+	var next []byte
+	if end < len(keys) {
+		next = append([]byte(nil), keys[end-1]...)
 	}
 	return ScanResult{Keys: page, Cursor: next}, nil
 }

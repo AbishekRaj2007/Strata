@@ -52,10 +52,10 @@ type Stats struct {
 }
 
 // ScanResult is one page of a Scan. Cursor is the value to pass to the next
-// call, and is zero when the iteration is complete.
+// call, and is nil when the iteration is complete.
 type ScanResult struct {
 	Keys   [][]byte
-	Cursor uint64
+	Cursor []byte
 }
 
 // Engine is the storage engine's public surface. This interface is designed
@@ -82,10 +82,19 @@ type Engine interface {
 	// needs for its count.
 	Delete(key []byte) (bool, error)
 
-	// Scan returns up to count keys at or after the cursor, in key order,
-	// along with the cursor for the next page. A zero returned cursor means
-	// the iteration finished.
-	Scan(cursor uint64, count int) (ScanResult, error)
+	// Scan returns up to count keys strictly after the cursor, in key order,
+	// along with the cursor for the next page. A nil cursor starts the
+	// iteration; a nil returned cursor means it finished.
+	//
+	// The cursor is the last key returned, not a position. plan.md §7.5
+	// requires this: a numeric offset into a level or a file names a place
+	// that a flush or compaction moves, so a client paging across one would
+	// silently skip or repeat keys. A key still identifies the same point in
+	// the ordering after the files underneath it have been rewritten.
+	//
+	// The RESP layer presents Redis clients with the numeric cursor they
+	// expect and maps it to this one; see internal/server.
+	Scan(cursor []byte, count int) (ScanResult, error)
 
 	// Stats reports current engine state for INFO.
 	Stats() (Stats, error)

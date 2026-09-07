@@ -42,6 +42,23 @@ type RotationConfig struct {
 	// §7.1). It is a dependency because the manifest owns that counter from
 	// T4.1 onward.
 	NextFileNumber func() uint64
+
+	// SyncPolicy decides whether Add fsyncs the WAL before returning. Under
+	// SyncAlways it does, which is what makes an acknowledged write survive
+	// kill -9; under the other policies durability is the IntervalSyncer's
+	// business and Add only guarantees the bytes reached the OS.
+	//
+	// The fsync happens inside Add's critical section rather than through a
+	// wal.Syncer, because rotation swaps the WAL writer underneath and a
+	// syncer bound to one writer would fsync the wrong file after a
+	// rotation. That costs the group-commit batching T2.2 exists to provide;
+	// reinstating it here is T2.2's job, not this file's.
+	SyncPolicy wal.SyncPolicy
+
+	// FirstSequence seeds the sequence counter after recovery, so that
+	// sequence numbers continue past everything the replayed WAL contained
+	// rather than restarting and colliding with it.
+	FirstSequence uint64
 }
 
 // slot pairs a memtable with the WAL that protects it.
@@ -108,7 +125,7 @@ func newMemtableSet(cfg RotationConfig) (*memtableSet, error) {
 		cfg.MaxImmutable = DefaultMaxImmutable
 	}
 
-	s := &memtableSet{cfg: cfg}
+	s := &memtableSet{cfg: cfg, seq: cfg.FirstSequence}
 	s.cond = sync.NewCond(&s.mu)
 
 	first, err := s.openSlot()
@@ -196,6 +213,15 @@ func (s *memtableSet) Add(key, value []byte, tombstone bool) (seq uint64, endOff
 		return 0, 0, fmt.Errorf("rotation: wal append: %w", err)
 	}
 
+	// Under sync=always the write is not acknowledgeable until it is on the
+	// platter, so the fsync happens before the memtable insert makes it
+	// visible to readers. Returning an error here leaves nothing observable.
+	if s.cfg.SyncPolicy == wal.SyncAlways {
+		if err := s.active.wal.Sync(); err != nil {
+			return 0, 0, fmt.Errorf("rotation: wal sync: %w", err)
+		}
+	}
+
 	e := memtable.Entry{Key: key, Sequence: seq, Value: value, Tombstone: tombstone}
 	if err := s.active.table.Insert(e); err != nil {
 		// The record is already in the WAL, so recovery will replay it. The
@@ -273,6 +299,30 @@ func (s *memtableSet) Get(key []byte) (e memtable.Entry, found bool) {
 		}
 	}
 	return memtable.Entry{}, false
+}
+
+// rotate forces the active memtable onto the immutable queue regardless of
+// its size, and blocks if the queue is full.
+//
+// Writes reach the queue on their own once the threshold is crossed; this is
+// for the cases where something other than size decides -- an explicit flush
+// request, or a clean shutdown that would rather leave an SSTable behind than
+// a WAL to replay. An empty active memtable is left alone, since rotating it
+// would produce an empty table and a WAL that protects nothing.
+func (s *memtableSet) rotate() error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	if s.closed {
+		return ErrClosed
+	}
+	if s.active.table.ApproxSize() == 0 {
+		return nil
+	}
+	if err := s.awaitQueueSpaceLocked(); err != nil {
+		return err
+	}
+	return s.rotateLocked()
 }
 
 // Oldest returns the memtable at the front of the immutable queue, which is
@@ -366,4 +416,38 @@ func (s *memtableSet) Close() error {
 		}
 	}
 	return firstErr
+}
+
+// iterators returns an iterator over every live memtable, newest first: the
+// active memtable, then the immutable queue from newest to oldest.
+//
+// The order is the same one Get walks, so a merge over these resolves a tie
+// between two sources the way a point lookup would.
+func (s *memtableSet) iterators() []memtable.Iterator {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+
+	its := make([]memtable.Iterator, 0, len(s.immutable)+1)
+	its = append(its, s.active.table.NewIterator())
+	for i := len(s.immutable) - 1; i >= 0; i-- {
+		its = append(its, s.immutable[i].table.NewIterator())
+	}
+	return its
+}
+
+// syncActive fsyncs the WAL protecting the active memtable.
+//
+// Recovery needs this: it rewrites replayed data into a fresh WAL and then
+// deletes the WALs it replayed, and those deletes are only safe once the new
+// copy is durable. It is the same rule the flusher obeys before removing a
+// WAL, applied to the same situation -- data existing in exactly one place
+// that is about to be removed.
+func (s *memtableSet) syncActive() error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	if s.closed {
+		return ErrClosed
+	}
+	return s.active.wal.Sync()
 }

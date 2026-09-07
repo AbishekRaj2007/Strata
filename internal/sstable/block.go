@@ -245,7 +245,15 @@ func (blk *Block) Seek(target []byte) (*BlockIterator, error) {
 			if err != nil {
 				return nil, err
 			}
-			if bytes.Compare(e.Key, target) <= 0 {
+			// Strictly less than, not <=. A user key can occupy several
+			// consecutive entries -- one per sequence, newest first -- and a
+			// restart point can land inside that run. Accepting a restart
+			// whose key equals the target would begin the scan partway
+			// through those versions, skipping the newest and returning a
+			// stale value or missing a tombstone. Starting at the last
+			// restart strictly before the target guarantees the forward scan
+			// meets every entry for it.
+			if bytes.Compare(e.Key, target) < 0 {
 				best = mid
 				lo = mid + 1
 			} else {

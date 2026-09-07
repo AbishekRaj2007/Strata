@@ -298,3 +298,55 @@ func TestRandomizedRoundTrip(t *testing.T) {
 		}
 	}
 }
+
+// TestSeekFindsNewestVersionWhenARestartSplitsAKey is a regression test for a
+// bug the reference model test surfaced in Phase 4.
+//
+// A single user key occupies one entry per sequence, newest first, and a
+// restart point can land inside that run. The restart binary search used to
+// accept a restart whose key equalled the target, which began the scan
+// partway through those versions -- so Seek returned a stale value, or missed
+// a tombstone and resurrected a deleted key.
+//
+// The key is placed so that a restart lands squarely inside its versions,
+// which is the only arrangement that shows the bug.
+func TestSeekFindsNewestVersionWhenARestartSplitsAKey(t *testing.T) {
+	b := NewBlockBuilder()
+
+	// One short of a restart boundary, so that the key's three versions
+	// occupy indices 15, 16 and 17 -- putting the restart at index 16 on the
+	// *middle* version. A restart landing on the newest version would not
+	// show the bug, because the scan would start there anyway.
+	for i := 0; i < RestartInterval-1; i++ {
+		b.Add(memtable.Entry{
+			Key:      []byte(fmt.Sprintf("a%03d", i)),
+			Sequence: uint64(1000 - i),
+			Value:    []byte("v"),
+		})
+	}
+	// ...so that this key's versions straddle the restart at index 16.
+	// Newest first, as the comparator requires.
+	b.Add(memtable.Entry{Key: []byte("target"), Sequence: 30, Tombstone: true})
+	b.Add(memtable.Entry{Key: []byte("target"), Sequence: 20, Value: []byte("middle")})
+	b.Add(memtable.Entry{Key: []byte("target"), Sequence: 10, Value: []byte("oldest")})
+
+	blk, err := NewBlock(b.Finish())
+	if err != nil {
+		t.Fatalf("NewBlock: %v", err)
+	}
+
+	it, err := blk.Seek([]byte("target"))
+	if err != nil {
+		t.Fatalf("Seek: %v", err)
+	}
+	if !it.Next() {
+		t.Fatal("Seek(target) found nothing")
+	}
+
+	got := it.Entry()
+	if got.Sequence != 30 || !got.Tombstone {
+		t.Errorf("Seek landed on seq %d (tombstone=%v, value=%q), want the seq-30 tombstone -- "+
+			"a restart point inside the key's versions skipped the newest",
+			got.Sequence, got.Tombstone, got.Value)
+	}
+}

@@ -67,6 +67,15 @@ type Flusher struct {
 	quit    chan struct{}
 	wg      sync.WaitGroup
 
+	// flushMu serialises whole flushes. Oldest and Discard are individually
+	// safe, but a flush spans both with an SSTable build and two fsyncs in
+	// between, and two flushes interleaved there would each pick the same
+	// memtable and the second Discard would name one already gone. Flushes
+	// are inherently serial anyway -- queue order is what keeps sequence
+	// numbers ascending across the tables produced -- so serialising them
+	// costs nothing and makes DrainQueue safe to call from anywhere.
+	flushMu sync.Mutex
+
 	mu      sync.Mutex
 	err     error
 	flushed uint64
@@ -165,6 +174,9 @@ func (f *Flusher) DrainQueue() error {
 // FlushOldest flushes the memtable at the front of the immutable queue and
 // reports whether the queue was already empty.
 func (f *Flusher) FlushOldest() (empty bool, err error) {
+	f.flushMu.Lock()
+	defer f.flushMu.Unlock()
+
 	sl, ok := f.set.Oldest()
 	if !ok {
 		return true, nil
@@ -218,6 +230,15 @@ func (f *Flusher) FlushOldest() (empty bool, err error) {
 	// Recording it in the same record makes the fact durable atomically with
 	// the file that made it true.
 	edit.SetLogNumber(sl.number + 1)
+
+	// The highest sequence this table contains has to be durable too. This
+	// flush is about to delete the WAL that was the only other record of
+	// these sequences, so without it a restart restores the counter from
+	// nothing and starts reissuing numbers from zero. A delete written after
+	// that restart would be assigned a *lower* sequence than the value it is
+	// meant to shadow, and lose to it -- a deleted key coming back to life,
+	// which is the failure mode the whole comparator exists to prevent.
+	edit.SetLastSequence(info.LargestSeq)
 
 	if err := f.log.Append(&edit); err != nil {
 		return false, err

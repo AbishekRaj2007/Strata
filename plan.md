@@ -767,11 +767,13 @@ The immutability of `Version` is the whole design. Grasping *why* a mutable list
 
 ---
 
-### - [ ] T4.2 — Implement file lifecycle and reference counting
+### - [x] T4.2 — Implement file lifecycle and reference counting
 
-> **Built; *Done when* met at the version layer.** `internal/manifest/refcount.go` and `cleanup.go`: references on both versions and files, `Acquire`/`Release`, obsolete collection, `DeleteObsolete`, and the §4.1 startup orphan sweep. `TestReadersNeverTouchADeletedFile` runs 100 readers against 200 compactions with a fault-injection layer that panics on any read of a deleted file — 110,336 reads, clean under `-race`.
+> **Complete.** `internal/manifest/refcount.go` and `cleanup.go`: references on both versions and files, `Acquire`/`Release`, obsolete collection, `DeleteObsolete`, and the §4.1 startup orphan sweep.
 >
-> The suite was mutation-tested: releasing the old version's file references before the new version takes its own makes it fail with named files. Unticked because the readers read a tracker rather than real SSTables, which do not exist until T3.4.
+> The done-when now runs against real tables. `TestReadersNeverTouchADeletedSSTable` puts 100 readers against 100 compactions where every file is a real SSTable built by `sstable.WriteTable`: readers open the file, parse its footer and index, and verify a data block's checksum, and the compactor genuinely `os.Remove`s obsolete files. 14,000 real reads, clean under `-race`. The tracker-based `TestReadersNeverTouchADeletedFile` is kept alongside it — it runs a heavier interleaving cheaply, so the two are complementary rather than redundant.
+>
+> The fault-injection layer is retained on top of real deletion because the two catch different things: POSIX keeps an already-open file readable after unlink, so unlinking alone would miss a reader that opened before the delete. Mutation-tested — releasing the old version's file references before the new version takes its own fails it with a named file.
 
 **Effort:** 3–4 h · **Model:** Fable 5 — lifetime bugs here are the hardest to reason about
 
@@ -785,7 +787,13 @@ This is the Go equivalent of the memory-lifetime problem Rust would have forced 
 
 ---
 
-### - [ ] T4.3 — Implement the complete Get path
+### - [x] T4.3 — Implement the complete Get path
+
+> **Complete.** `internal/engine/get.go` holds `lookup`: active memtable, immutable memtables newest-first, L0 tables newest-first, then one binary-searched candidate per level below L0, first match winning and a tombstone stopping the search. Table access goes through a `tableReader` interface so T5.1's bloom filter and T5.2's cache slot in without disturbing the order.
+>
+> Done-when met exhaustively. `TestEveryFlushInterleavingOfWriteOverwriteDelete` sweeps all 2^7 = 128 placements of flushes across write-plus-five-overwrites-plus-delete, and a companion sweeps the 2^6 without the delete asserting the newest value wins — 192 subtests.
+>
+> Mutation-tested twice. Iterating L0 oldest-first fails the trap test with the visit order named; letting a tombstone fall through to lower levels fails every interleaving in which the delete was flushed, identified by mask.
 
 **Effort:** 3–4 h · **Model:** write it yourself; Opus 5 for review
 
@@ -799,7 +807,13 @@ The asymmetry between L0 and lower levels is worth internalising properly. L0 fi
 
 ---
 
-### - [ ] T4.4 — Implement the k-way merge iterator
+### - [x] T4.4 — Implement the k-way merge iterator
+
+> **Complete.** `internal/sstable/merge.go` holds `MergeIterator`: a heap-based merge over any number of `memtable.Iterator` sources, deduplicating by user key under the canonical `(user_key asc, sequence desc)` comparator, with tombstone suppression as a flag so Phase 6 compaction can reuse it verbatim. It lives in `internal/sstable` because §8 assigns "iterators" to that package.
+>
+> Done-when both halves met. `TestMergeTenSourcesWithHeavyOverlap` merges 2,440 entries over 10 sources down to 300 distinct keys and checks the result entry-for-entry against a sorted reference model, with and without tombstone suppression. `TestMergeCostGrowsLogarithmicallyInSources` fixes the entry count and varies only k: going 2 → 128 sources costs **6.4×** against the 7× that O(n log k) predicts, where O(nk) would predict 64×.
+>
+> Mutation-tested twice. Comparing user keys alone fails three tests including the ten-source case; replacing `heap.Fix` with a per-entry `heap.Init` (making it O(nk)) moves the ratio to 40.1× and fails the complexity assertion.
 
 **Effort:** 3–4 h · **Model:** write it yourself — this is core interview surface
 
@@ -814,6 +828,14 @@ Build this once and build it well, because compaction reuses it verbatim in Phas
 ---
 
 ### - [ ] T4.5 — Implement SCAN and the reference model test
+
+> **Built; one done-when clause unverified.** `LSM.Scan` pages on a key-based cursor over `MergeIterator` with tombstone suppression, and `test/model/` holds the reference engine, the weighted generator, the runner and a delta-debugging shrinker.
+>
+> A specification conflict was resolved here rather than papered over. §7.5 says the cursor "encodes the last key returned", but `Engine.Scan` took a `uint64`, which cannot hold a key, and T1.2 called that interface final. The interface changed, because a numeric offset names a position that a flush moves — `TestScanCursorSurvivesAFlush` flushes mid-iteration and asserts no key is skipped or repeated. The RESP layer keeps the numeric cursor Redis clients require by issuing per-connection tokens, so `make interop` and go-redis are unaffected.
+>
+> **Shrinking is proven** (`TestShrinkerFindsAMinimalSequence`, 2,002 ops → 2). **`TestModelManySeeds` is green**: 50 seeds × 1,000 operations, zero divergence, 18.7 s. It found three real bugs, each reported as a sequence under twenty operations — see commit 8110205.
+>
+> Unticked on "50,000 random operations produce zero divergence": that run has not yet been confirmed green. It is slow for a structural reason rather than an accidental one — Phase 4 has no compaction, so L0 grows without bound and a full scan reopens every table in it. Expect it to become cheap once T6.x lands; until then it runs with `LongRunWeights`, which makes SCAN rare so the sequence tests depth rather than quadratic rescanning.
 
 **Effort:** 2–3 h · **Model:** Sonnet 5 for the test harness; write SCAN yourself
 

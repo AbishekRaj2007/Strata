@@ -434,3 +434,20 @@ func (s *memtableSet) iterators() []memtable.Iterator {
 	}
 	return its
 }
+
+// syncActive fsyncs the WAL protecting the active memtable.
+//
+// Recovery needs this: it rewrites replayed data into a fresh WAL and then
+// deletes the WALs it replayed, and those deletes are only safe once the new
+// copy is durable. It is the same rule the flusher obeys before removing a
+// WAL, applied to the same situation -- data existing in exactly one place
+// that is about to be removed.
+func (s *memtableSet) syncActive() error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	if s.closed {
+		return ErrClosed
+	}
+	return s.active.wal.Sync()
+}

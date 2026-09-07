@@ -231,6 +231,15 @@ func (f *Flusher) FlushOldest() (empty bool, err error) {
 	// the file that made it true.
 	edit.SetLogNumber(sl.number + 1)
 
+	// The highest sequence this table contains has to be durable too. This
+	// flush is about to delete the WAL that was the only other record of
+	// these sequences, so without it a restart restores the counter from
+	// nothing and starts reissuing numbers from zero. A delete written after
+	// that restart would be assigned a *lower* sequence than the value it is
+	// meant to shadow, and lose to it -- a deleted key coming back to life,
+	// which is the failure mode the whole comparator exists to prevent.
+	edit.SetLastSequence(info.LargestSeq)
+
 	if err := f.log.Append(&edit); err != nil {
 		return false, err
 	}

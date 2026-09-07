@@ -113,6 +113,15 @@ func Open(opts Options) (*LSM, error) {
 		highest = s
 	}
 
+	// The WALs that existed before this run opened its own. They are the
+	// ones replay just consumed, and they must be deleted afterwards -- see
+	// retireReplayedWALs.
+	consumed, err := existingWALs(opts.Dir)
+	if err != nil {
+		_ = log.Close()
+		return nil, err
+	}
+
 	set, err := newMemtableSet(RotationConfig{
 		Dir:            opts.Dir,
 		Threshold:      opts.Threshold,
@@ -144,6 +153,11 @@ func Open(opts Options) (*LSM, error) {
 	// entries its own WAL never recorded, and a second crash before the next
 	// flush would lose them.
 	if err := e.reloadReplayed(replayed); err != nil {
+		_ = set.Close()
+		_ = log.Close()
+		return nil, err
+	}
+	if err := e.retireReplayedWALs(consumed); err != nil {
 		_ = set.Close()
 		_ = log.Close()
 		return nil, err
@@ -272,15 +286,83 @@ func seedManifest(log *manifest.Log, vs *manifest.VersionSet) error {
 }
 
 // reloadReplayed pushes recovered entries back through the write path.
+//
+// Only the newest version of each key is reloaded, and that is a correctness
+// requirement rather than an optimisation. Add assigns fresh, ascending
+// sequence numbers, but the replay iterator yields versions of a key newest
+// first -- so reloading all of them would hand the oldest version the highest
+// new sequence and invert the order. A key deleted and then rewritten would
+// come back deleted.
+//
+// Keeping just the newest version sidesteps that entirely: older versions are
+// shadowed and unobservable anyway, and the surviving one keeps its meaning,
+// tombstone included. The recovered entries land above every sequence in a
+// committed table, which is right, because the flusher only deletes a WAL
+// after the data it protected was committed.
 func (e *LSM) reloadReplayed(replayed *memtable.SkipList) error {
+	var previous []byte
+	first := true
+
 	it := replayed.NewIterator()
 	for it.Next() {
 		entry := it.Entry()
+		if !first && bytes.Equal(entry.Key, previous) {
+			continue // an older version of a key already reloaded
+		}
+		previous = append(previous[:0], entry.Key...)
+		first = false
+
 		if _, _, err := e.set.Add(entry.Key, entry.Value, entry.Tombstone); err != nil {
 			return fmt.Errorf("engine: reloading recovered write: %w", err)
 		}
 	}
 	return nil
+}
+
+// existingWALs lists the WAL files already in dir.
+func existingWALs(dir string) ([]string, error) {
+	entries, err := os.ReadDir(dir)
+	if err != nil {
+		return nil, fmt.Errorf("engine: read dir %s: %w", dir, err)
+	}
+
+	var names []string
+	for _, entry := range entries {
+		if !entry.IsDir() && strings.HasSuffix(entry.Name(), ".wal") {
+			names = append(names, entry.Name())
+		}
+	}
+	return names, nil
+}
+
+// retireReplayedWALs deletes the WALs whose contents were just rewritten into
+// the current one.
+//
+// Without this, replay is not idempotent across restarts. The recovered
+// writes are re-logged into the new WAL, but the old file stays on disk and
+// is replayed again on the *next* open -- reintroducing writes that have
+// since been superseded or deleted. A key deleted after one restart comes
+// back after the next, because the original PUT is still sitting in a WAL
+// nobody removed.
+//
+// The new WAL is fsynced first. These files are the only other copy of the
+// data until that returns, so deleting them any earlier is the same mistake
+// the flusher is careful not to make with the manifest.
+func (e *LSM) retireReplayedWALs(consumed []string) error {
+	if len(consumed) == 0 {
+		return nil
+	}
+
+	if err := e.set.syncActive(); err != nil {
+		return fmt.Errorf("engine: sync recovered writes: %w", err)
+	}
+
+	for _, name := range consumed {
+		if err := os.Remove(filepath.Join(e.dir, name)); err != nil && !errors.Is(err, os.ErrNotExist) {
+			return fmt.Errorf("engine: remove replayed wal %s: %w", name, err)
+		}
+	}
+	return syncDir(e.dir)
 }
 
 // Put stores value under key.
@@ -311,12 +393,25 @@ func (e *LSM) Get(key []byte) ([]byte, error) {
 		return nil, err
 	}
 
-	// Acquire pins the version for the whole lookup, so a concurrent flush
-	// cannot delete a file between choosing it and opening it.
+	// The memtables are consulted before the version is acquired, for the
+	// same reason Scan does it: a flush between acquiring a version and
+	// reading the memtables would leave the data in neither, because the
+	// memtable is gone and the table it became is named only by a newer
+	// version. Reading memtables first can only see a key twice, and the
+	// first match wins anyway.
+	if entry, found := e.set.Get(key); found {
+		if entry.Tombstone {
+			return nil, ErrNotFound
+		}
+		return append([]byte(nil), entry.Value...), nil
+	}
+
+	// Acquire pins the version for the rest of the lookup, so a concurrent
+	// flush cannot delete a file between choosing it and opening it.
 	v := e.vs.Acquire()
 	defer e.vs.Release(v)
 
-	entry, found, err := lookup(e.set, v, e.tables, key)
+	entry, found, err := lookup(nil, v, e.tables, key)
 	if err != nil {
 		return nil, err
 	}
@@ -406,9 +501,7 @@ func (e *LSM) checkOpen() error {
 // can hold the same key at the same sequence only if something has gone
 // wrong, and the merge breaks that tie by source index. Listing newest first
 // means the tie resolves the same way the Get path would.
-func (e *LSM) scanSources(v *manifest.Version) ([]memtable.Iterator, []*sstable.Table, error) {
-	sources := e.set.iterators()
-
+func (e *LSM) scanSources(sources []memtable.Iterator, v *manifest.Version) ([]memtable.Iterator, []*sstable.Table, error) {
 	var opened []*sstable.Table
 	closeAll := func() {
 		for _, t := range opened {
@@ -448,10 +541,20 @@ func (e *LSM) Scan(cursor []byte, count int) (ScanResult, error) {
 		count = 10
 	}
 
+	// The memtables are snapshotted before the version is acquired, and the
+	// order is load-bearing. A flush moves data out of a memtable and into a
+	// table named by a *newer* version; taking the version first leaves a
+	// window where the memtable is already gone and the table is not yet in
+	// the version we hold, so the data is in neither and the scan silently
+	// drops it. Taking the memtables first can only ever double-count across
+	// that window, and the merge deduplicates. Missing is fatal, duplicated
+	// is free.
+	sources := e.set.iterators()
+
 	v := e.vs.Acquire()
 	defer e.vs.Release(v)
 
-	sources, opened, err := e.scanSources(v)
+	sources, opened, err := e.scanSources(sources, v)
 	if err != nil {
 		return ScanResult{}, err
 	}
@@ -489,4 +592,20 @@ func (e *LSM) Scan(cursor []byte, count int) (ScanResult, error) {
 		next = append([]byte(nil), page[len(page)-1]...)
 	}
 	return ScanResult{Keys: page, Cursor: next}, nil
+}
+
+// Flush forces the active memtable out to an SSTable and waits for it.
+//
+// Nothing in the write path needs this -- rotation happens on size and the
+// background flusher drains the queue on its own. It exists for the cases
+// that want the boundary to be observable: a test that needs data on disk at
+// a known point, and the FLUSH command.
+func (e *LSM) Flush() error {
+	if err := e.checkOpen(); err != nil {
+		return err
+	}
+	if err := e.set.rotate(); err != nil {
+		return err
+	}
+	return e.flusher.DrainQueue()
 }

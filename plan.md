@@ -741,13 +741,13 @@ The ordering is a durability argument you must be able to state: the WAL may onl
 **Goal:** correct reads across memtable and many SSTables, with working deletes.
 **Total effort:** 16–20 hours.
 
-### - [ ] T4.1 — Implement the version and manifest subsystem
+### - [x] T4.1 — Implement the version and manifest subsystem
 
-> **Built above the log, blocked at it.** `internal/manifest/` holds `FileMetadata`, `VersionEdit` encoding and decoding to §4, the immutable `Version` with its level invariants, `Apply`, `VersionSet` with atomic installation, and the atomic `CURRENT` write. Green under `-race`.
+> **Complete.** `internal/manifest/` holds `FileMetadata`, `VersionEdit` encoding and decoding to §4, the immutable `Version` with its level invariants, `Apply`, `VersionSet` with atomic installation, the atomic `CURRENT` write, and — as of the log commit — `Log`/`CreateLog`/`Append` and `Recover`. Green under `-race`.
 >
-> The manifest *log* is not written. §4 has it reuse the WAL block framing exactly, and `wal.Writer.Write` takes a `*wal.Batch` rather than raw bytes, so appending an encoded edit needs a framing-level entry point — and replay needs T2.3's reader. Both sit on §4 hand-write surface, so they are the author's to add.
+> The framing blocker is cleared. `wal.Writer.WriteRecord` and `wal.Reader.NextRecord` were extracted as the raw-bytes entry points, so §4's "reuses the WAL block framing exactly" is now literally one implementation rather than two, and the §2.3 clean-tail rule is inherited rather than reimplemented.
 >
-> Consequently the *Done when* is only half met: the 200-file, four-level reconstruction passes through `Apply` (`TestReplayOf200FilesAcrossFourLevels`), but "a manifest truncated mid-edit recovers to the last complete edit" cannot be tested without the log.
+> Both halves of the *Done when* are met: `TestRecoverReconstructs200FilesAcrossFourLevels` replays 200 files over 4 levels from bytes actually written to disk, and `TestRecoverStopsAtATruncatedEdit` sweeps every truncation length and recovers to the last complete edit. The truncation sweep includes the untruncated length so it cannot pass vacuously, and was mutation-tested: treating the clean tail as fatal fails it.
 
 **Effort:** 5–6 h · **Model:** Opus 5 for the design; write the implementation yourself
 

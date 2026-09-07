@@ -55,8 +55,26 @@ func NewReader(f *os.File) *Reader {
 // mid-write) and real corruption a correctness requirement, not a stylistic
 // one, so callers must not treat the two interchangeably.
 func (r *Reader) Next() (Batch, error) {
+	payload, err := r.NextRecord()
+	if err != nil {
+		return Batch{}, err
+	}
+	return decodeOrCorrupt(payload)
+}
+
+// NextRecord returns the next record's reassembled payload without
+// interpreting it, and reports a clean end of log as io.EOF on the same terms
+// as Next.
+//
+// This is the read half of the framing docs/format.md §4 has the manifest
+// reuse: manifest replay reassembles records exactly as WAL recovery does and
+// then decodes each payload as a version edit rather than a batch. The
+// clean-tail rules in §2.3 are the framing's, not the batch codec's, so a
+// manifest truncated mid-edit gets the same treatment for free -- the last
+// incomplete record is end of log, not corruption.
+func (r *Reader) NextRecord() ([]byte, error) {
 	if r.readErr != nil {
-		return Batch{}, fmt.Errorf("wal: reading log: %w", r.readErr)
+		return nil, fmt.Errorf("wal: reading log: %w", r.readErr)
 	}
 
 	var payload []byte
@@ -68,37 +86,37 @@ func (r *Reader) Next() (Batch, error) {
 			if started && errors.Is(err, io.EOF) {
 				// A FIRST or MIDDLE with no follower is the expected shape of
 				// a crash mid-batch (§2.3), not corruption.
-				return Batch{}, io.EOF
+				return nil, io.EOF
 			}
-			return Batch{}, err
+			return nil, err
 		}
 
 		switch typ {
 		case FragmentFull:
 			if started {
-				return Batch{}, fmt.Errorf("wal: FULL fragment follows an unfinished FIRST: %w", ErrCorrupt)
+				return nil, fmt.Errorf("wal: FULL fragment follows an unfinished FIRST: %w", ErrCorrupt)
 			}
-			return decodeOrCorrupt(frag)
+			return frag, nil
 
 		case FragmentFirst:
 			if started {
-				return Batch{}, fmt.Errorf("wal: FIRST fragment follows an unfinished FIRST: %w", ErrCorrupt)
+				return nil, fmt.Errorf("wal: FIRST fragment follows an unfinished FIRST: %w", ErrCorrupt)
 			}
 			payload = append(payload, frag...)
 			started = true
 
 		case FragmentMiddle:
 			if !started {
-				return Batch{}, fmt.Errorf("wal: orphaned MIDDLE fragment: %w", ErrCorrupt)
+				return nil, fmt.Errorf("wal: orphaned MIDDLE fragment: %w", ErrCorrupt)
 			}
 			payload = append(payload, frag...)
 
 		case FragmentLast:
 			if !started {
-				return Batch{}, fmt.Errorf("wal: orphaned LAST fragment: %w", ErrCorrupt)
+				return nil, fmt.Errorf("wal: orphaned LAST fragment: %w", ErrCorrupt)
 			}
 			payload = append(payload, frag...)
-			return decodeOrCorrupt(payload)
+			return payload, nil
 		}
 	}
 }

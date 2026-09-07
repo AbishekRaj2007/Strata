@@ -42,6 +42,23 @@ type RotationConfig struct {
 	// §7.1). It is a dependency because the manifest owns that counter from
 	// T4.1 onward.
 	NextFileNumber func() uint64
+
+	// SyncPolicy decides whether Add fsyncs the WAL before returning. Under
+	// SyncAlways it does, which is what makes an acknowledged write survive
+	// kill -9; under the other policies durability is the IntervalSyncer's
+	// business and Add only guarantees the bytes reached the OS.
+	//
+	// The fsync happens inside Add's critical section rather than through a
+	// wal.Syncer, because rotation swaps the WAL writer underneath and a
+	// syncer bound to one writer would fsync the wrong file after a
+	// rotation. That costs the group-commit batching T2.2 exists to provide;
+	// reinstating it here is T2.2's job, not this file's.
+	SyncPolicy wal.SyncPolicy
+
+	// FirstSequence seeds the sequence counter after recovery, so that
+	// sequence numbers continue past everything the replayed WAL contained
+	// rather than restarting and colliding with it.
+	FirstSequence uint64
 }
 
 // slot pairs a memtable with the WAL that protects it.
@@ -108,7 +125,7 @@ func newMemtableSet(cfg RotationConfig) (*memtableSet, error) {
 		cfg.MaxImmutable = DefaultMaxImmutable
 	}
 
-	s := &memtableSet{cfg: cfg}
+	s := &memtableSet{cfg: cfg, seq: cfg.FirstSequence}
 	s.cond = sync.NewCond(&s.mu)
 
 	first, err := s.openSlot()
@@ -194,6 +211,15 @@ func (s *memtableSet) Add(key, value []byte, tombstone bool) (seq uint64, endOff
 		// logged, so the number is still unused and reusing it keeps the WAL's
 		// sequences dense.
 		return 0, 0, fmt.Errorf("rotation: wal append: %w", err)
+	}
+
+	// Under sync=always the write is not acknowledgeable until it is on the
+	// platter, so the fsync happens before the memtable insert makes it
+	// visible to readers. Returning an error here leaves nothing observable.
+	if s.cfg.SyncPolicy == wal.SyncAlways {
+		if err := s.active.wal.Sync(); err != nil {
+			return 0, 0, fmt.Errorf("rotation: wal sync: %w", err)
+		}
 	}
 
 	e := memtable.Entry{Key: key, Sequence: seq, Value: value, Tombstone: tombstone}

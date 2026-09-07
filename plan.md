@@ -767,11 +767,13 @@ The immutability of `Version` is the whole design. Grasping *why* a mutable list
 
 ---
 
-### - [ ] T4.2 — Implement file lifecycle and reference counting
+### - [x] T4.2 — Implement file lifecycle and reference counting
 
-> **Built; *Done when* met at the version layer.** `internal/manifest/refcount.go` and `cleanup.go`: references on both versions and files, `Acquire`/`Release`, obsolete collection, `DeleteObsolete`, and the §4.1 startup orphan sweep. `TestReadersNeverTouchADeletedFile` runs 100 readers against 200 compactions with a fault-injection layer that panics on any read of a deleted file — 110,336 reads, clean under `-race`.
+> **Complete.** `internal/manifest/refcount.go` and `cleanup.go`: references on both versions and files, `Acquire`/`Release`, obsolete collection, `DeleteObsolete`, and the §4.1 startup orphan sweep.
 >
-> The suite was mutation-tested: releasing the old version's file references before the new version takes its own makes it fail with named files. Unticked because the readers read a tracker rather than real SSTables, which do not exist until T3.4.
+> The done-when now runs against real tables. `TestReadersNeverTouchADeletedSSTable` puts 100 readers against 100 compactions where every file is a real SSTable built by `sstable.WriteTable`: readers open the file, parse its footer and index, and verify a data block's checksum, and the compactor genuinely `os.Remove`s obsolete files. 14,000 real reads, clean under `-race`. The tracker-based `TestReadersNeverTouchADeletedFile` is kept alongside it — it runs a heavier interleaving cheaply, so the two are complementary rather than redundant.
+>
+> The fault-injection layer is retained on top of real deletion because the two catch different things: POSIX keeps an already-open file readable after unlink, so unlinking alone would miss a reader that opened before the delete. Mutation-tested — releasing the old version's file references before the new version takes its own fails it with a named file.
 
 **Effort:** 3–4 h · **Model:** Fable 5 — lifetime bugs here are the hardest to reason about
 

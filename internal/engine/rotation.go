@@ -275,6 +275,30 @@ func (s *memtableSet) Get(key []byte) (e memtable.Entry, found bool) {
 	return memtable.Entry{}, false
 }
 
+// rotate forces the active memtable onto the immutable queue regardless of
+// its size, and blocks if the queue is full.
+//
+// Writes reach the queue on their own once the threshold is crossed; this is
+// for the cases where something other than size decides -- an explicit flush
+// request, or a clean shutdown that would rather leave an SSTable behind than
+// a WAL to replay. An empty active memtable is left alone, since rotating it
+// would produce an empty table and a WAL that protects nothing.
+func (s *memtableSet) rotate() error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	if s.closed {
+		return ErrClosed
+	}
+	if s.active.table.ApproxSize() == 0 {
+		return nil
+	}
+	if err := s.awaitQueueSpaceLocked(); err != nil {
+		return err
+	}
+	return s.rotateLocked()
+}
+
 // Oldest returns the memtable at the front of the immutable queue, which is
 // the one the flusher must write next, and whether one exists. Flushing in
 // queue order keeps sequence numbers ascending across the SSTables produced.

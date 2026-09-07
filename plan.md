@@ -787,7 +787,13 @@ This is the Go equivalent of the memory-lifetime problem Rust would have forced 
 
 ---
 
-### - [ ] T4.3 — Implement the complete Get path
+### - [x] T4.3 — Implement the complete Get path
+
+> **Complete.** `internal/engine/get.go` holds `lookup`: active memtable, immutable memtables newest-first, L0 tables newest-first, then one binary-searched candidate per level below L0, first match winning and a tombstone stopping the search. Table access goes through a `tableReader` interface so T5.1's bloom filter and T5.2's cache slot in without disturbing the order.
+>
+> Done-when met exhaustively. `TestEveryFlushInterleavingOfWriteOverwriteDelete` sweeps all 2^7 = 128 placements of flushes across write-plus-five-overwrites-plus-delete, and a companion sweeps the 2^6 without the delete asserting the newest value wins — 192 subtests.
+>
+> Mutation-tested twice. Iterating L0 oldest-first fails the trap test with the visit order named; letting a tombstone fall through to lower levels fails every interleaving in which the delete was flushed, identified by mask.
 
 **Effort:** 3–4 h · **Model:** write it yourself; Opus 5 for review
 

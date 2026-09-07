@@ -57,6 +57,13 @@ func (e *flushEnv) put(t *testing.T, key, value string) {
 	}
 }
 
+func (e *flushEnv) del(t *testing.T, key string) {
+	t.Helper()
+	if _, _, err := e.set.Add([]byte(key), nil, true); err != nil {
+		t.Fatalf("Delete(%q): %v", key, err)
+	}
+}
+
 // walExists reports whether the WAL for a slot number is still on disk.
 func (e *flushEnv) walExists(number uint64) bool {
 	_, err := os.Stat(filepath.Join(e.dir, fmt.Sprintf("%06d.wal", number)))

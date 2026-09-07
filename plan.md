@@ -708,7 +708,7 @@ Prefix compression and restart points are in tension — sharing saves space, re
 
 ---
 
-### - [ ] T3.4 — Implement the SSTable builder and reader
+### - [x] T3.4 — Implement the SSTable builder and reader
 
 **Effort:** 4–5 h · **Model:** Sonnet 5 for plumbing, but write the layout logic yourself
 

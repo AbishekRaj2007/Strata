@@ -595,7 +595,7 @@ So it is a policy choice, and you implement all three:
 | `interval` | Lose at most the last N ms | Background sync every N ms; near-zero |
 | `never` | Survives process crash, not machine crash | Free |
 
-### - [ ] T2.1 — Implement WAL record framing and the writer
+### - [x] T2.1 — Implement WAL record framing and the writer
 
 **Effort:** 4–5 h · **Model:** write it yourself; Fable 5 to attack your framing for gaps
 
@@ -625,7 +625,7 @@ Design it as a leader-follower handoff — arriving writers queue, the first bec
 
 ---
 
-### - [ ] T2.3 — Implement the WAL reader and startup recovery
+### - [x] T2.3 — Implement the WAL reader and startup recovery
 
 **Effort:** 3–4 h · **Model:** write it yourself; Opus 5 to review the failure taxonomy
 
@@ -660,7 +660,7 @@ Make the kill point targetable rather than only random — you will need to kill
 **Goal:** exceed RAM. Sorted, immutable data lands on disk.
 **Total effort:** 20–26 hours.
 
-### - [ ] T3.1 — Implement the concurrent skip list
+### - [x] T3.1 — Implement the concurrent skip list
 
 **Effort:** 5–6 h · **Model:** write it entirely yourself; Opus 5 to review memory ordering afterwards
 
@@ -674,13 +674,13 @@ Make reads lock-free using atomic loads on forward pointers, with a single write
 
 ---
 
-### - [ ] T3.2 — Implement memtable rotation and the immutable queue
+### - [x] T3.2 — Implement memtable rotation and the immutable queue
 
-> **Built, not closed.** `internal/engine/rotation.go` holds `memtableSet`: the threshold, the atomic swap, the bounded queue, the fresh memtable and WAL opened in one critical section, reads walking active then immutables newest-first, and stall accounting surfaced through `INFO` as `write_stalls` and `write_stall_seconds`. `internal/memtable/memtable.go` defines the `Memtable` interface and the §3.1 comparator. Green under `-race`, 93.1% coverage on `internal/engine`.
+> **Done.** `internal/engine/rotation.go` holds `memtableSet`: the threshold, the atomic swap, the bounded queue, the fresh memtable and WAL opened in one critical section, reads walking active then immutables newest-first, and stall accounting surfaced through `INFO` as `write_stalls` and `write_stall_seconds`. `internal/memtable/skiplist.go` (T3.1) is now wired in as the `New` hook, replacing the `sliceTable` test double everywhere. Green under `-race`, 93.1% coverage on `internal/engine`.
 >
-> Both *Done when* conditions have passing tests — `TestSustainedWorkloadRotatesWithReadsCorrect` and `TestBackpressureStallsRatherThanGrowing` — but it stays unticked for two reasons. The workload runs against `sliceTable`, a deliberately naive test double, because T3.1 does not exist; "rotates repeatedly with reads correct throughout" means little until a real concurrent memtable is underneath it. And only the memtable half of the trap is asserted: sequence ranges are contiguous and disjoint across slots, but proving every record went to the WAL belonging to the memtable it was inserted into needs T2.3's reader to parse the files back.
+> Both *Done when* conditions pass against the real skip list: `TestSustainedWorkloadRotatesWithReadsCorrect` and `TestBackpressureStallsRatherThanGrowing`. The trap is now fully asserted: `TestSequenceRangesAreDisjointAcrossSlots` covers the memtable half, and `TestEachRecordLandsInItsMemtablesWAL` covers the WAL half by parsing each slot's WAL file back with T2.3's reader and checking its sequence set against the memtable's.
 >
-> Written before T2.3 and T3.1 at the author's direction, out of the usual phase order.
+> Written before T2.3 and T3.1 at the author's direction, out of the usual phase order; closed once both landed.
 
 **Effort:** 3–4 h · **Model:** Opus 5 — the atomicity requirements are subtle
 
@@ -694,7 +694,7 @@ The bounded queue matters. If flushing falls behind, writes must stall with a cl
 
 ---
 
-### - [ ] T3.3 — Implement the SSTable block encoder and decoder
+### - [x] T3.3 — Implement the SSTable block encoder and decoder
 
 **Effort:** 4–5 h · **Model:** write it yourself; Opus 5 to review boundary handling
 
@@ -708,7 +708,7 @@ Prefix compression and restart points are in tension — sharing saves space, re
 
 ---
 
-### - [ ] T3.4 — Implement the SSTable builder and reader
+### - [x] T3.4 — Implement the SSTable builder and reader
 
 **Effort:** 4–5 h · **Model:** Sonnet 5 for plumbing, but write the layout logic yourself
 
@@ -723,6 +723,12 @@ The directory fsync is not optional and is widely missed. A file creation is not
 ---
 
 ### - [ ] T3.5 — Implement the flusher and close the loop
+
+> **Built; three of four done-when clauses met.** `internal/engine/flush.go` holds `Flusher`: it consumes the immutable queue, builds the SSTable via `sstable.WriteTable` (which fsyncs the file and the directory), appends ADD_FILE through `manifest.Log.Append` (which fsyncs, and is the commit point), installs the version, and only then discards the memtable and deletes its WAL. Green under `-race`.
+>
+> The ordering is proven by a deterministic fault-injection hook rather than by argument. `TestWALSurvivesUntilTheManifestCommits` stops the flush between the SSTable fsync and the manifest fsync and asserts the WAL is still on disk; it was mutation-tested by moving the retire into that window, which fails it by name. Table-count, readability and flat-memory clauses are covered by `TestFlushProducesOneTablePerMemtable`, `TestFlushedDataIsReadableAfterReplay` and `TestFlushMemoryStaysFlat` — the ratio and memory tests run at a size the suite can afford rather than at 1 GB, and say so.
+>
+> **Unticked on the fourth clause: "50 kills targeted at the flush window lose nothing."** `test/crash` defines `KillPointDuringFlush`, but `cmd/strata-server/main.go` still constructs `engine.NewMemory()`, so no server process yet reaches the flusher. Honouring that kill point needs a durable `Engine` behind the server, which needs the complete Get path over the memtable, the immutable queue and L0 — that is T4.3's scope, plus startup recovery wiring. Deferred there rather than pulled forward into this task.
 
 **Effort:** 4–6 h · **Model:** Opus 5 for the ordering constraints
 
@@ -741,13 +747,13 @@ The ordering is a durability argument you must be able to state: the WAL may onl
 **Goal:** correct reads across memtable and many SSTables, with working deletes.
 **Total effort:** 16–20 hours.
 
-### - [ ] T4.1 — Implement the version and manifest subsystem
+### - [x] T4.1 — Implement the version and manifest subsystem
 
-> **Built above the log, blocked at it.** `internal/manifest/` holds `FileMetadata`, `VersionEdit` encoding and decoding to §4, the immutable `Version` with its level invariants, `Apply`, `VersionSet` with atomic installation, and the atomic `CURRENT` write. Green under `-race`.
+> **Complete.** `internal/manifest/` holds `FileMetadata`, `VersionEdit` encoding and decoding to §4, the immutable `Version` with its level invariants, `Apply`, `VersionSet` with atomic installation, the atomic `CURRENT` write, and — as of the log commit — `Log`/`CreateLog`/`Append` and `Recover`. Green under `-race`.
 >
-> The manifest *log* is not written. §4 has it reuse the WAL block framing exactly, and `wal.Writer.Write` takes a `*wal.Batch` rather than raw bytes, so appending an encoded edit needs a framing-level entry point — and replay needs T2.3's reader. Both sit on §4 hand-write surface, so they are the author's to add.
+> The framing blocker is cleared. `wal.Writer.WriteRecord` and `wal.Reader.NextRecord` were extracted as the raw-bytes entry points, so §4's "reuses the WAL block framing exactly" is now literally one implementation rather than two, and the §2.3 clean-tail rule is inherited rather than reimplemented.
 >
-> Consequently the *Done when* is only half met: the 200-file, four-level reconstruction passes through `Apply` (`TestReplayOf200FilesAcrossFourLevels`), but "a manifest truncated mid-edit recovers to the last complete edit" cannot be tested without the log.
+> Both halves of the *Done when* are met: `TestRecoverReconstructs200FilesAcrossFourLevels` replays 200 files over 4 levels from bytes actually written to disk, and `TestRecoverStopsAtATruncatedEdit` sweeps every truncation length and recovers to the last complete edit. The truncation sweep includes the untruncated length so it cannot pass vacuously, and was mutation-tested: treating the clean tail as fatal fails it.
 
 **Effort:** 5–6 h · **Model:** Opus 5 for the design; write the implementation yourself
 

@@ -48,7 +48,20 @@ func NewWriter(f *os.File) *Writer {
 // The returned offset means "these bytes are with the OS", never "these bytes
 // are durable" -- durability is the Syncer's business.
 func (w *Writer) Write(b *Batch) (int64, error) {
-	payload := b.Encode(nil)
+	return w.WriteRecord(b.Encode(nil))
+}
+
+// WriteRecord frames one opaque payload as a single record, fragmenting it
+// across blocks as needed, and returns the file offset immediately after the
+// last byte written.
+//
+// The framing knows nothing about what the payload means, which is what lets
+// docs/format.md §4 reuse it verbatim for the manifest: the manifest log is
+// the same 32 KiB blocks, the same 7-byte fragment header, and the same
+// CRC32C, carrying encoded version edits instead of batches. One framing
+// implementation serves both, so there is exactly one place where a framing
+// bug can live.
+func (w *Writer) WriteRecord(payload []byte) (int64, error) {
 	first := true
 
 	for {
@@ -83,7 +96,7 @@ func (w *Writer) Write(b *Batch) (int64, error) {
 		w.buf[pos+6] = byte(fragmentType(first, last))
 		copy(w.buf[pos+7:], payload[:n])
 
-		sw.blockPos += HeaderSize + n
+		w.blockPos += HeaderSize + n
 		w.offset += int64(HeaderSize + n)
 
 		binary.LittleEndian.PutUint32(w.buf[pos:pos+4],

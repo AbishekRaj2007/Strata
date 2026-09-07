@@ -6,9 +6,13 @@
 // holding a version sees a file list that cannot change and files that cannot
 // be deleted while it is held.
 //
-// The manifest log itself -- appending encoded edits to MANIFEST-NNNNNN and
-// replaying them at startup -- is not here yet. docs/format.md §4 has it reuse
-// the WAL block framing exactly, so it waits on the framing reader from T2.3.
-// Everything above that line is present: [VersionEdit] encoding and decoding,
-// [Version.Apply], reference counting, and the CURRENT file.
+// [Log] is the manifest log: [Log.Append] writes one record per edit and
+// fsyncs it, and that fsync is the commit point docs/format.md §4.1 defines.
+// [Recover] replays the manifest CURRENT names back into a VersionSet.
+//
+// The framing is the WAL's, reused rather than reimplemented -- §4 specifies
+// the same blocks, headers and checksums, so the manifest calls
+// wal.Writer.WriteRecord and wal.Reader.NextRecord directly. The clean-tail
+// rule from §2.3 comes with it, which is what makes a manifest truncated
+// mid-edit recover to the last complete edit without any code of its own.
 package manifest

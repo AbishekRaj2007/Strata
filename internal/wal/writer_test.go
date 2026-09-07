@@ -253,9 +253,13 @@ func TestHeaderStraddlingBlockBoundary(t *testing.T) {
 func blockFillerSize(t *testing.T, gap int) int {
 	t.Helper()
 
+	// The probe's value must land in the same uvarint width class as the real
+	// filler value that follows (both are tens of KB, a 3-byte length). A
+	// nil-valued probe under-counts overhead by 2 bytes and throws off every
+	// boundary computed from it.
 	probe := &Batch{Sequence: 1}
-	probe.AppendSet([]byte("pad"), nil)
-	overhead := len(probe.Encode(nil))
+	probe.AppendSet([]byte("pad"), make([]byte, BlockSize))
+	overhead := len(probe.Encode(nil)) - BlockSize
 
 	filler := BlockSize - HeaderSize - overhead - gap
 	if filler < 0 {

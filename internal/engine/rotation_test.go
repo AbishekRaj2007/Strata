@@ -12,82 +12,15 @@ import (
 	"time"
 
 	"github.com/AbishekRaj2007/Strata/internal/memtable"
+	"github.com/AbishekRaj2007/Strata/internal/wal"
 )
 
-// sliceTable is a deliberately naive stand-in for the concurrent skip list of
-// T3.1: a slice, a mutex, and a linear scan. It exists so the rotation
-// machinery can be tested before the skip list is written, and it is
-// intentionally not an implementation of one -- no levels, no atomics, no
-// lock-free reads. When T3.1 lands it replaces this in the New hook and
-// nothing else in these tests changes, which is the property the interface
-// exists to provide.
-type sliceTable struct {
-	mu      sync.RWMutex
-	entries []memtable.Entry
-	size    int
-}
+func newTestTable() memtable.Memtable { return memtable.NewSkipList() }
 
-func newSliceTable() memtable.Memtable { return &sliceTable{} }
-
-// perEntryOverhead stands in for the per-node cost a real skip list carries,
-// so that ApproxSize is not a pure payload count and thresholds behave the way
-// they will in production.
+// perEntryOverhead mirrors internal/memtable's own per-node overhead constant
+// (unexported, so it cannot be imported directly) so that thresholds sized
+// against it behave the same way here as they do against the real skip list.
 const perEntryOverhead = 48
-
-func (s *sliceTable) Insert(e memtable.Entry) error {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-
-	s.entries = append(s.entries, e)
-	s.size += len(e.Key) + len(e.Value) + perEntryOverhead
-	return nil
-}
-
-func (s *sliceTable) Get(key []byte) (memtable.Entry, bool) {
-	s.mu.RLock()
-	defer s.mu.RUnlock()
-
-	var best memtable.Entry
-	found := false
-	for _, e := range s.entries {
-		if string(e.Key) != string(key) {
-			continue
-		}
-		if !found || e.Sequence > best.Sequence {
-			best, found = e, true
-		}
-	}
-	return best, found
-}
-
-func (s *sliceTable) NewIterator() memtable.Iterator {
-	s.mu.RLock()
-	defer s.mu.RUnlock()
-
-	sorted := append([]memtable.Entry(nil), s.entries...)
-	sort.Slice(sorted, func(i, j int) bool {
-		return memtable.Compare(sorted[i].Key, sorted[i].Sequence, sorted[j].Key, sorted[j].Sequence) < 0
-	})
-	return &sliceIter{entries: sorted, pos: -1}
-}
-
-func (s *sliceTable) ApproxSize() int {
-	s.mu.RLock()
-	defer s.mu.RUnlock()
-	return s.size
-}
-
-type sliceIter struct {
-	entries []memtable.Entry
-	pos     int
-}
-
-func (it *sliceIter) Next() bool {
-	it.pos++
-	return it.pos < len(it.entries)
-}
-
-func (it *sliceIter) Entry() memtable.Entry { return it.entries[it.pos] }
 
 // newTestSet builds a memtableSet in a temporary directory with a monotonic
 // file numbering hook, mirroring the allocator the manifest owns from T4.1.
@@ -99,7 +32,7 @@ func newTestSet(t *testing.T, threshold, maxImmutable int) *memtableSet {
 		Dir:            t.TempDir(),
 		Threshold:      threshold,
 		MaxImmutable:   maxImmutable,
-		New:            newSliceTable,
+		New:            newTestTable,
 		NextFileNumber: func() uint64 { return counter.Add(1) },
 	})
 	if err != nil {
@@ -113,7 +46,7 @@ func TestDefaultsApplied(t *testing.T) {
 	var counter atomic.Uint64
 	s, err := newMemtableSet(RotationConfig{
 		Dir:            t.TempDir(),
-		New:            newSliceTable,
+		New:            newTestTable,
 		NextFileNumber: func() uint64 { return counter.Add(1) },
 	})
 	if err != nil {
@@ -134,7 +67,7 @@ func TestRequiredDependencies(t *testing.T) {
 	if _, err := newMemtableSet(RotationConfig{Dir: dir, NextFileNumber: func() uint64 { return 1 }}); err == nil {
 		t.Error("missing New: want an error")
 	}
-	if _, err := newMemtableSet(RotationConfig{Dir: dir, New: newSliceTable}); err == nil {
+	if _, err := newMemtableSet(RotationConfig{Dir: dir, New: newTestTable}); err == nil {
 		t.Error("missing NextFileNumber: want an error")
 	}
 }
@@ -269,8 +202,8 @@ func TestTombstoneIsAVersionNotAnAbsence(t *testing.T) {
 // across the queue with no overlap and no gaps.
 //
 // The WAL half -- that every record was appended to the WAL belonging to the
-// memtable it was inserted into -- needs T2.3's reader to parse the files back
-// and is not asserted here.
+// memtable it was inserted into -- is TestEachRecordLandsInItsMemtablesWAL,
+// below.
 func TestSequenceRangesAreDisjointAcrossSlots(t *testing.T) {
 	// No flusher drains the queue here, because the point is to inspect every
 	// memtable the workload produced. The bound must therefore exceed the
@@ -312,6 +245,69 @@ func TestSequenceRangesAreDisjointAcrossSlots(t *testing.T) {
 
 	if next-1 != writes {
 		t.Errorf("highest sequence across slots = %d, want %d", next-1, writes)
+	}
+}
+
+// TestEachRecordLandsInItsMemtablesWAL is the WAL half of T3.2's trap: a
+// write must be durable in the WAL belonging to the memtable it was inserted
+// into. If a write landed in a new memtable but the old WAL -- or vice versa
+// -- recovery would replay it against the wrong file and reorder it relative
+// to writes that followed, silently corrupting the read path. This needs
+// T2.3's reader to parse the files back, which is why it could not be
+// asserted until T2.3 landed.
+func TestEachRecordLandsInItsMemtablesWAL(t *testing.T) {
+	const writes = 200
+	s := newTestSet(t, perEntryOverhead*3, writes)
+
+	for i := 0; i < writes; i++ {
+		if _, _, err := s.Add([]byte(fmt.Sprintf("k%03d", i)), []byte("v"), false); err != nil {
+			t.Fatalf("Add %d: %v", i, err)
+		}
+	}
+
+	slots := append(append([]*slot{}, s.immutable...), s.active)
+	if len(slots) < 2 {
+		t.Fatalf("need at least two slots for this test to mean anything, have %d", len(slots))
+	}
+
+	for i, sl := range slots {
+		memtableSeqs := map[uint64]bool{}
+		it := sl.table.NewIterator()
+		for it.Next() {
+			memtableSeqs[it.Entry().Sequence] = true
+		}
+
+		if err := sl.wal.Sync(); err != nil {
+			t.Fatalf("slot %d: sync: %v", i, err)
+		}
+
+		path := filepath.Join(s.cfg.Dir, fmt.Sprintf("%06d.wal", sl.number))
+		f, err := os.Open(path)
+		if err != nil {
+			t.Fatalf("slot %d: open %s: %v", i, path, err)
+		}
+
+		walSeqs := map[uint64]bool{}
+		r := wal.NewReader(f)
+		for {
+			b, err := r.Next()
+			if err != nil {
+				break
+			}
+			for j := range b.Records {
+				walSeqs[b.Sequence+uint64(j)] = true
+			}
+		}
+		_ = f.Close()
+
+		if len(walSeqs) != len(memtableSeqs) {
+			t.Fatalf("slot %d: WAL has %d records, memtable has %d", i, len(walSeqs), len(memtableSeqs))
+		}
+		for seq := range memtableSeqs {
+			if !walSeqs[seq] {
+				t.Errorf("slot %d: sequence %d is in the memtable but not in its own WAL file", i, seq)
+			}
+		}
 	}
 }
 

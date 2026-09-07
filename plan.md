@@ -829,6 +829,14 @@ Build this once and build it well, because compaction reuses it verbatim in Phas
 
 ### - [ ] T4.5 — Implement SCAN and the reference model test
 
+> **Built; one done-when clause unverified.** `LSM.Scan` pages on a key-based cursor over `MergeIterator` with tombstone suppression, and `test/model/` holds the reference engine, the weighted generator, the runner and a delta-debugging shrinker.
+>
+> A specification conflict was resolved here rather than papered over. §7.5 says the cursor "encodes the last key returned", but `Engine.Scan` took a `uint64`, which cannot hold a key, and T1.2 called that interface final. The interface changed, because a numeric offset names a position that a flush moves — `TestScanCursorSurvivesAFlush` flushes mid-iteration and asserts no key is skipped or repeated. The RESP layer keeps the numeric cursor Redis clients require by issuing per-connection tokens, so `make interop` and go-redis are unaffected.
+>
+> **Shrinking is proven** (`TestShrinkerFindsAMinimalSequence`, 2,002 ops → 2). **`TestModelManySeeds` is green**: 50 seeds × 1,000 operations, zero divergence, 18.7 s. It found three real bugs, each reported as a sequence under twenty operations — see commit 8110205.
+>
+> Unticked on "50,000 random operations produce zero divergence": that run has not yet been confirmed green. It is slow for a structural reason rather than an accidental one — Phase 4 has no compaction, so L0 grows without bound and a full scan reopens every table in it. Expect it to become cheap once T6.x lands; until then it runs with `LongRunWeights`, which makes SCAN rare so the sequence tests depth rather than quadratic rescanning.
+
 **Effort:** 2–3 h · **Model:** Sonnet 5 for the test harness; write SCAN yourself
 
 Implement `SCAN` with cursor, `MATCH`, and `COUNT` on top of the merge iterator, then build the reference model test: a plain Go `map` implementing the same interface, a weighted random operation generator, and a runner asserting identical results across millions of operations.

@@ -240,7 +240,7 @@ func (c *conn) cmdScan(args [][]byte) error {
 		}
 	}
 
-	res, err := c.engine.Scan(cursor, count)
+	res, err := c.engine.Scan(c.resolveScanCursor(cursor), count)
 	if err != nil {
 		return c.replyEngineError(err)
 	}
@@ -258,7 +258,7 @@ func (c *conn) cmdScan(args [][]byte) error {
 	if err := c.w.WriteArrayHeader(2); err != nil {
 		return err
 	}
-	if err := c.w.WriteBulkString([]byte(strconv.FormatUint(res.Cursor, 10))); err != nil {
+	if err := c.w.WriteBulkString([]byte(strconv.FormatUint(c.issueScanCursor(res.Cursor), 10))); err != nil {
 		return err
 	}
 	if err := c.w.WriteArrayHeader(len(keys)); err != nil {
@@ -415,4 +415,31 @@ func commandNames() []string {
 		names = append(names, n)
 	}
 	return names
+}
+
+// resolveScanCursor turns a wire token into the engine cursor it stands for.
+// Zero always means "start from the beginning", which is Redis's contract.
+func (c *conn) resolveScanCursor(token uint64) []byte {
+	if token == 0 {
+		// A fresh iteration; anything remembered from a previous one on this
+		// connection is now unreachable.
+		c.scanCursors = nil
+		return nil
+	}
+	return c.scanCursors[token]
+}
+
+// issueScanCursor allocates a wire token for an engine cursor. A nil engine
+// cursor means the iteration finished, which Redis signals as zero.
+func (c *conn) issueScanCursor(cursor []byte) uint64 {
+	if cursor == nil {
+		c.scanCursors = nil
+		return 0
+	}
+	if c.scanCursors == nil {
+		c.scanCursors = make(map[uint64][]byte)
+	}
+	c.scanNext++
+	c.scanCursors[c.scanNext] = cursor
+	return c.scanNext
 }

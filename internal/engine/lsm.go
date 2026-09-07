@@ -1,15 +1,18 @@
 package engine
 
 import (
+	"bytes"
 	"errors"
 	"fmt"
 	"os"
+	"path/filepath"
 	"strconv"
 	"strings"
 	"sync"
 
 	"github.com/AbishekRaj2007/Strata/internal/manifest"
 	"github.com/AbishekRaj2007/Strata/internal/memtable"
+	"github.com/AbishekRaj2007/Strata/internal/sstable"
 	"github.com/AbishekRaj2007/Strata/internal/wal"
 )
 
@@ -52,8 +55,8 @@ type LSM struct {
 	closed bool
 }
 
-// LSM does not yet satisfy Engine: Scan arrives with T4.5, and the
-// compile-time assertion goes in alongside it.
+// Compile-time proof that the durable engine satisfies the public interface.
+var _ Engine = (*LSM)(nil)
 
 // Open starts an engine on dir, recovering whatever a previous run left
 // behind.
@@ -395,4 +398,95 @@ func (e *LSM) checkOpen() error {
 		return ErrClosed
 	}
 	return nil
+}
+
+// scanSources assembles every iterator the scan must merge, newest first.
+//
+// Order matters even though the merge sorts by the comparator: two sources
+// can hold the same key at the same sequence only if something has gone
+// wrong, and the merge breaks that tie by source index. Listing newest first
+// means the tie resolves the same way the Get path would.
+func (e *LSM) scanSources(v *manifest.Version) ([]memtable.Iterator, []*sstable.Table, error) {
+	sources := e.set.iterators()
+
+	var opened []*sstable.Table
+	closeAll := func() {
+		for _, t := range opened {
+			_ = t.Close()
+		}
+	}
+
+	for level := 0; level < manifest.NumLevels; level++ {
+		for _, fm := range v.Files(level) {
+			tbl, err := sstable.Open(filepath.Join(e.dir, fm.Name()))
+			if err != nil {
+				closeAll()
+				return nil, nil, fmt.Errorf("scan: open table %d: %w", fm.Number, err)
+			}
+			opened = append(opened, tbl)
+			sources = append(sources, tbl.NewIterator())
+		}
+	}
+	return sources, opened, nil
+}
+
+// Scan returns up to count keys strictly after cursor, in key order.
+//
+// The cursor is the last key of the previous page rather than a position, so
+// it stays meaningful across a flush or a compaction that rewrites the files
+// underneath it -- which is the whole reason plan.md §7.5 specifies it that
+// way.
+//
+// Tombstones are suppressed by the merge, and suppressing a delete also
+// suppresses the older versions it shadows, so a deleted key cannot reappear
+// in a page from a lower level.
+func (e *LSM) Scan(cursor []byte, count int) (ScanResult, error) {
+	if err := e.checkOpen(); err != nil {
+		return ScanResult{}, err
+	}
+	if count <= 0 {
+		count = 10
+	}
+
+	v := e.vs.Acquire()
+	defer e.vs.Release(v)
+
+	sources, opened, err := e.scanSources(v)
+	if err != nil {
+		return ScanResult{}, err
+	}
+	defer func() {
+		for _, t := range opened {
+			_ = t.Close()
+		}
+	}()
+
+	m := sstable.NewMergeIterator(sources, true)
+
+	// Advancing to the cursor by walking rather than by seeking each source.
+	// It is the obviously-correct formulation and Phase 4 is establishing
+	// correctness; pushing the seek down into the sources is a Phase 5
+	// optimisation, and the merge already exposes what it would need.
+	page := make([][]byte, 0, count)
+	for m.Next() {
+		key := m.Entry().Key
+		if cursor != nil && bytes.Compare(key, cursor) <= 0 {
+			continue
+		}
+		page = append(page, append([]byte(nil), key...))
+		if len(page) == count {
+			break
+		}
+	}
+	if err := m.Err(); err != nil {
+		return ScanResult{}, err
+	}
+
+	// A short page means the iteration reached the end. Only a full page can
+	// have more behind it, and its last key is the next cursor.
+	var next []byte
+	if len(page) == count {
+		next = append([]byte(nil), page[len(page)-1]...)
+	}
+	return ScanResult{Keys: page, Cursor: next}, nil
 }

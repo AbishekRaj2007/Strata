@@ -67,6 +67,15 @@ type Flusher struct {
 	quit    chan struct{}
 	wg      sync.WaitGroup
 
+	// flushMu serialises whole flushes. Oldest and Discard are individually
+	// safe, but a flush spans both with an SSTable build and two fsyncs in
+	// between, and two flushes interleaved there would each pick the same
+	// memtable and the second Discard would name one already gone. Flushes
+	// are inherently serial anyway -- queue order is what keeps sequence
+	// numbers ascending across the tables produced -- so serialising them
+	// costs nothing and makes DrainQueue safe to call from anywhere.
+	flushMu sync.Mutex
+
 	mu      sync.Mutex
 	err     error
 	flushed uint64
@@ -165,6 +174,9 @@ func (f *Flusher) DrainQueue() error {
 // FlushOldest flushes the memtable at the front of the immutable queue and
 // reports whether the queue was already empty.
 func (f *Flusher) FlushOldest() (empty bool, err error) {
+	f.flushMu.Lock()
+	defer f.flushMu.Unlock()
+
 	sl, ok := f.set.Oldest()
 	if !ok {
 		return true, nil

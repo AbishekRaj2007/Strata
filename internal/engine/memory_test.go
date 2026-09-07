@@ -169,7 +169,7 @@ func TestScanPagesInKeyOrder(t *testing.T) {
 	}
 
 	var seen []string
-	cursor := uint64(0)
+	var cursor []byte
 	for i := 0; ; i++ {
 		if i > 10 {
 			t.Fatal("Scan did not terminate")
@@ -182,7 +182,7 @@ func TestScanPagesInKeyOrder(t *testing.T) {
 		for _, k := range res.Keys {
 			seen = append(seen, string(k))
 		}
-		if res.Cursor == 0 {
+		if res.Cursor == nil {
 			break
 		}
 		cursor = res.Cursor
@@ -200,12 +200,12 @@ func TestScanPagesInKeyOrder(t *testing.T) {
 }
 
 func TestScanEmptyEngine(t *testing.T) {
-	res, err := NewMemory().Scan(0, 10)
+	res, err := NewMemory().Scan(nil, 10)
 	if err != nil {
 		t.Fatalf("Scan: %v", err)
 	}
-	if len(res.Keys) != 0 || res.Cursor != 0 {
-		t.Errorf("Scan of empty engine = %+v, want no keys and cursor 0", res)
+	if len(res.Keys) != 0 || res.Cursor != nil {
+		t.Errorf("Scan of empty engine = %+v, want no keys and a nil cursor", res)
 	}
 }
 
@@ -213,12 +213,12 @@ func TestScanCursorPastEnd(t *testing.T) {
 	m := NewMemory()
 	mustPut(t, m, "a", "v")
 
-	res, err := m.Scan(9999, 10)
+	res, err := m.Scan([]byte("zzzz"), 10)
 	if err != nil {
 		t.Fatalf("Scan: %v", err)
 	}
-	if len(res.Keys) != 0 || res.Cursor != 0 {
-		t.Errorf("Scan past end = %+v, want no keys and cursor 0", res)
+	if len(res.Keys) != 0 || res.Cursor != nil {
+		t.Errorf("Scan past end = %+v, want no keys and a nil cursor", res)
 	}
 }
 
@@ -265,7 +265,7 @@ func TestClosedEngineRejectsEverything(t *testing.T) {
 	if _, err := m.Delete([]byte("k")); !errors.Is(err, ErrClosed) {
 		t.Errorf("Delete after Close = %v, want ErrClosed", err)
 	}
-	if _, err := m.Scan(0, 10); !errors.Is(err, ErrClosed) {
+	if _, err := m.Scan(nil, 10); !errors.Is(err, ErrClosed) {
 		t.Errorf("Scan after Close = %v, want ErrClosed", err)
 	}
 	if _, err := m.Stats(); !errors.Is(err, ErrClosed) {
@@ -305,7 +305,7 @@ func TestConcurrentAccess(t *testing.T) {
 				case 2:
 					_, _ = m.Delete(key)
 				case 3:
-					_, _ = m.Scan(0, 5)
+					_, _ = m.Scan(nil, 5)
 				}
 			}
 		}()

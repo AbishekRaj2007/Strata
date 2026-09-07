@@ -285,6 +285,20 @@ type conn struct {
 	// quitting asks the loop to stop after the current command completes.
 	quitting atomic.Bool
 
+	// scanCursors bridges two different cursors. The engine's cursor is the
+	// last key returned, which is what keeps it valid across a compaction
+	// (plan.md §7.5); Redis clients, including go-redis, parse the wire
+	// cursor as an integer and hand it back verbatim. So the connection
+	// issues numeric tokens and remembers which key each one stands for.
+	//
+	// The table is per-connection and cleared whenever an iteration
+	// finishes or restarts from zero, which bounds it to the pages of one
+	// in-flight scan. Redis itself documents that an invalid cursor may
+	// yield arbitrary results, so an unknown token restarting from the
+	// beginning is within the contract.
+	scanCursors map[uint64][]byte
+	scanNext    uint64
+
 	closeOnce sync.Once
 }
 

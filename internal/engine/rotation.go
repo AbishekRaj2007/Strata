@@ -417,3 +417,20 @@ func (s *memtableSet) Close() error {
 	}
 	return firstErr
 }
+
+// iterators returns an iterator over every live memtable, newest first: the
+// active memtable, then the immutable queue from newest to oldest.
+//
+// The order is the same one Get walks, so a merge over these resolves a tie
+// between two sources the way a point lookup would.
+func (s *memtableSet) iterators() []memtable.Iterator {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+
+	its := make([]memtable.Iterator, 0, len(s.immutable)+1)
+	its = append(its, s.active.table.NewIterator())
+	for i := len(s.immutable) - 1; i >= 0; i-- {
+		its = append(its, s.immutable[i].table.NewIterator())
+	}
+	return its
+}

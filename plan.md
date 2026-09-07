@@ -724,6 +724,12 @@ The directory fsync is not optional and is widely missed. A file creation is not
 
 ### - [ ] T3.5 — Implement the flusher and close the loop
 
+> **Built; three of four done-when clauses met.** `internal/engine/flush.go` holds `Flusher`: it consumes the immutable queue, builds the SSTable via `sstable.WriteTable` (which fsyncs the file and the directory), appends ADD_FILE through `manifest.Log.Append` (which fsyncs, and is the commit point), installs the version, and only then discards the memtable and deletes its WAL. Green under `-race`.
+>
+> The ordering is proven by a deterministic fault-injection hook rather than by argument. `TestWALSurvivesUntilTheManifestCommits` stops the flush between the SSTable fsync and the manifest fsync and asserts the WAL is still on disk; it was mutation-tested by moving the retire into that window, which fails it by name. Table-count, readability and flat-memory clauses are covered by `TestFlushProducesOneTablePerMemtable`, `TestFlushedDataIsReadableAfterReplay` and `TestFlushMemoryStaysFlat` — the ratio and memory tests run at a size the suite can afford rather than at 1 GB, and say so.
+>
+> **Unticked on the fourth clause: "50 kills targeted at the flush window lose nothing."** `test/crash` defines `KillPointDuringFlush`, but `cmd/strata-server/main.go` still constructs `engine.NewMemory()`, so no server process yet reaches the flusher. Honouring that kill point needs a durable `Engine` behind the server, which needs the complete Get path over the memtable, the immutable queue and L0 — that is T4.3's scope, plus startup recovery wiring. Deferred there rather than pulled forward into this task.
+
 **Effort:** 4–6 h · **Model:** Opus 5 for the ordering constraints
 
 Wire the background flusher: consume from the immutable queue, build an SSTable from the memtable iterator, append the ADD_FILE manifest edit, fsync the manifest, and only then drop the memtable and delete its WAL.

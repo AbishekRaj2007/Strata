@@ -39,13 +39,22 @@ var ErrCorruptTable = errors.New("sstable: corrupt table")
 // parse failure, so the diagnostic tells the operator what actually happened.
 var ErrUnsupportedVersion = errors.New("sstable: unsupported format version")
 
-// Info summarises a table just written or opened.
+// Info summarises a table just written or opened. It is everything the
+// manifest needs to record the file without reopening it.
 type Info struct {
 	Path        string
 	EntryCount  int
 	SmallestKey []byte
 	LargestKey  []byte
 	Size        int64
+
+	// SmallestSeq and LargestSeq bound the sequence numbers in the table.
+	// They are tracked as a running min and max rather than read off the
+	// first and last entries: the comparator orders by user key ascending
+	// and sequence *descending*, so the extremes of the sequence range can
+	// sit anywhere in the file.
+	SmallestSeq uint64
+	LargestSeq  uint64
 }
 
 // indexEntry is one docs/format.md §3.4 index record: the largest user key in
@@ -189,6 +198,8 @@ type Writer struct {
 	entryCount   int
 	smallest     []byte
 	largest      []byte
+	smallestSeq  uint64
+	largestSeq   uint64
 }
 
 func newWriter(f *os.File) *Writer {
@@ -210,8 +221,15 @@ func (w *Writer) Add(e memtable.Entry) error {
 
 	if w.entryCount == 0 {
 		w.smallest = append([]byte(nil), e.Key...)
+		w.smallestSeq, w.largestSeq = e.Sequence, e.Sequence
 	}
 	w.largest = append(w.largest[:0], e.Key...)
+	if e.Sequence < w.smallestSeq {
+		w.smallestSeq = e.Sequence
+	}
+	if e.Sequence > w.largestSeq {
+		w.largestSeq = e.Sequence
+	}
 	w.entryCount++
 	return nil
 }
@@ -284,6 +302,8 @@ func (w *Writer) Finish() (Info, error) {
 		SmallestKey: w.smallest,
 		LargestKey:  w.largest,
 		Size:        w.offset,
+		SmallestSeq: w.smallestSeq,
+		LargestSeq:  w.largestSeq,
 	}, nil
 }
 

@@ -801,7 +801,13 @@ The asymmetry between L0 and lower levels is worth internalising properly. L0 fi
 
 ---
 
-### - [ ] T4.4 — Implement the k-way merge iterator
+### - [x] T4.4 — Implement the k-way merge iterator
+
+> **Complete.** `internal/sstable/merge.go` holds `MergeIterator`: a heap-based merge over any number of `memtable.Iterator` sources, deduplicating by user key under the canonical `(user_key asc, sequence desc)` comparator, with tombstone suppression as a flag so Phase 6 compaction can reuse it verbatim. It lives in `internal/sstable` because §8 assigns "iterators" to that package.
+>
+> Done-when both halves met. `TestMergeTenSourcesWithHeavyOverlap` merges 2,440 entries over 10 sources down to 300 distinct keys and checks the result entry-for-entry against a sorted reference model, with and without tombstone suppression. `TestMergeCostGrowsLogarithmicallyInSources` fixes the entry count and varies only k: going 2 → 128 sources costs **6.4×** against the 7× that O(n log k) predicts, where O(nk) would predict 64×.
+>
+> Mutation-tested twice. Comparing user keys alone fails three tests including the ten-source case; replacing `heap.Fix` with a per-entry `heap.Init` (making it O(nk)) moves the ratio to 40.1× and fails the complexity assertion.
 
 **Effort:** 3–4 h · **Model:** write it yourself — this is core interview surface
 

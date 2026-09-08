@@ -9,7 +9,9 @@ import (
 	"os"
 	"path/filepath"
 	"sort"
+	"sync/atomic"
 
+	"github.com/AbishekRaj2007/Strata/internal/bloom"
 	"github.com/AbishekRaj2007/Strata/internal/memtable"
 )
 
@@ -55,6 +57,15 @@ type Info struct {
 	// sit anywhere in the file.
 	SmallestSeq uint64
 	LargestSeq  uint64
+
+	// DistinctKeys is the number of distinct user keys, which is what sized
+	// the bloom filter. It differs from EntryCount whenever a table holds
+	// more than one version of a key.
+	DistinctKeys int
+
+	// BloomBytes is the size of the encoded bloom block, the memory price of
+	// the filter for this table. T5.3 plots it against false positive rate.
+	BloomBytes int
 }
 
 // indexEntry is one docs/format.md §3.4 index record: the largest user key in
@@ -100,36 +111,6 @@ func decodeFooter(b []byte) (footer, error) {
 		indexOffset: binary.LittleEndian.Uint64(b[16:24]),
 		indexLength: binary.LittleEndian.Uint64(b[24:32]),
 	}, nil
-}
-
-// encodeBloomStub writes a well-formed, empty bloom block: T5.1 populates it
-// for real. bit_array_len=0 makes every lookup against it report absent,
-// which is safe (never a false negative) precisely because nothing consults
-// it yet -- Get always falls through to the data blocks until T5.1 wires the
-// filter into the read path.
-func encodeBloomStub() []byte {
-	buf := make([]byte, 0, 16)
-	buf = binary.LittleEndian.AppendUint32(buf, 0) // bits_per_key
-	buf = binary.LittleEndian.AppendUint32(buf, 0) // num_probes
-	buf = binary.LittleEndian.AppendUint32(buf, 0) // bit_array_len
-	checksum := crc32.Checksum(buf, crcTable)
-	return binary.LittleEndian.AppendUint32(buf, checksum)
-}
-
-// verifyBloomStub checksums a bloom block the same way every other section of
-// the table is checksummed. The filter itself is not consulted for
-// correctness until T5.1, but its bytes still live in a file readers trust,
-// so a flipped bit here must be caught like any other corruption rather than
-// passing through unnoticed.
-func verifyBloomStub(b []byte) error {
-	if len(b) < 4 {
-		return fmt.Errorf("%w: bloom block is %d bytes, too short for a trailer", ErrCorruptTable, len(b))
-	}
-	checksum := binary.LittleEndian.Uint32(b[len(b)-4:])
-	if crc32.Checksum(b[:len(b)-4], crcTable) != checksum {
-		return fmt.Errorf("%w: bloom block checksum mismatch", ErrCorruptTable)
-	}
-	return nil
 }
 
 func encodeIndex(entries []indexEntry) []byte {
@@ -185,15 +166,41 @@ func decodeIndex(b []byte) ([]indexEntry, error) {
 	return entries, nil
 }
 
+// WriterOptions tunes how a table is built. Both fields have defaults, and
+// both are swept by T5.3's tuning study -- which is why they are parameters
+// here rather than constants: a study that cannot vary the parameter it is
+// studying is a benchmark, not a study.
+type WriterOptions struct {
+	// BitsPerKey sizes the bloom filter. Zero selects
+	// bloom.DefaultBitsPerKey.
+	BitsPerKey int
+
+	// BlockSize is the target data block size in bytes. Zero selects the
+	// docs/format.md §3.2 default of 4 KiB.
+	BlockSize int
+}
+
+func (o WriterOptions) withDefaults() WriterOptions {
+	if o.BitsPerKey <= 0 {
+		o.BitsPerKey = bloom.DefaultBitsPerKey
+	}
+	if o.BlockSize <= 0 {
+		o.BlockSize = targetBlockBytes
+	}
+	return o
+}
+
 // Writer builds one SSTable, writing sections in order and recording their
 // offsets as it goes -- never patching the footer after the fact, since the
 // final size of a preceding section is not known until it is written.
 type Writer struct {
 	f      *os.File
+	opts   WriterOptions
 	offset int64
 
 	block        *BlockBuilder
 	blockLargest []byte
+	filter       *bloom.Builder
 	index        []indexEntry
 	entryCount   int
 	smallest     []byte
@@ -202,15 +209,21 @@ type Writer struct {
 	largestSeq   uint64
 }
 
-func newWriter(f *os.File) *Writer {
-	return &Writer{f: f, block: NewBlockBuilder()}
+func newWriter(f *os.File, opts WriterOptions) *Writer {
+	opts = opts.withDefaults()
+	return &Writer{
+		f:      f,
+		opts:   opts,
+		block:  NewBlockBuilder(),
+		filter: bloom.NewBuilder(opts.BitsPerKey),
+	}
 }
 
 // Add appends one entry. Entries must arrive in comparator order; Add trusts
 // its caller the same way BlockBuilder.Add does.
 func (w *Writer) Add(e memtable.Entry) error {
 	estimate := len(e.Key) + len(e.Value) + 24
-	if !w.block.Empty() && w.block.Size()+estimate > targetBlockBytes {
+	if !w.block.Empty() && w.block.Size()+estimate > w.opts.BlockSize {
 		if err := w.flushBlock(); err != nil {
 			return err
 		}
@@ -218,6 +231,12 @@ func (w *Writer) Add(e memtable.Entry) error {
 
 	w.block.Add(e)
 	w.blockLargest = append(w.blockLargest[:0], e.Key...)
+
+	// The filter is fed the user key with the sequence stripped, per
+	// docs/format.md §3.3. Because entries arrive in comparator order every
+	// version of a key is adjacent, so the builder collapses the repeats and
+	// sizes the bit array by distinct keys rather than by entry count.
+	w.filter.Add(e.Key)
 
 	if w.entryCount == 0 {
 		w.smallest = append([]byte(nil), e.Key...)
@@ -269,7 +288,7 @@ func (w *Writer) Finish() (Info, error) {
 	}
 
 	bloomOffset := w.offset
-	bloomBytes := encodeBloomStub()
+	bloomBytes := w.filter.Finish()
 	if _, err := w.f.Write(bloomBytes); err != nil {
 		return Info{}, fmt.Errorf("sstable: write bloom block: %w", err)
 	}
@@ -298,12 +317,14 @@ func (w *Writer) Finish() (Info, error) {
 	}
 
 	return Info{
-		EntryCount:  w.entryCount,
-		SmallestKey: w.smallest,
-		LargestKey:  w.largest,
-		Size:        w.offset,
-		SmallestSeq: w.smallestSeq,
-		LargestSeq:  w.largestSeq,
+		EntryCount:   w.entryCount,
+		DistinctKeys: w.filter.Keys(),
+		SmallestKey:  w.smallest,
+		LargestKey:   w.largest,
+		Size:         w.offset,
+		SmallestSeq:  w.smallestSeq,
+		LargestSeq:   w.largestSeq,
+		BloomBytes:   len(bloomBytes),
 	}, nil
 }
 
@@ -315,6 +336,12 @@ func (w *Writer) Finish() (Info, error) {
 // directory entry naming it is durable, and skipping this step can leave a
 // crash-recovered database missing a file its manifest still references.
 func WriteTable(dir string, number uint64, it memtable.Iterator) (Info, error) {
+	return WriteTableOpts(dir, number, it, WriterOptions{})
+}
+
+// WriteTableOpts is WriteTable with the build parameters exposed. A zero
+// WriterOptions is exactly WriteTable.
+func WriteTableOpts(dir string, number uint64, it memtable.Iterator, opts WriterOptions) (Info, error) {
 	path := filepath.Join(dir, fmt.Sprintf("%06d.sst", number))
 
 	f, err := os.OpenFile(path, os.O_CREATE|os.O_EXCL|os.O_WRONLY, 0o600)
@@ -322,7 +349,7 @@ func WriteTable(dir string, number uint64, it memtable.Iterator) (Info, error) {
 		return Info{}, fmt.Errorf("sstable: create %s: %w", path, err)
 	}
 
-	w := newWriter(f)
+	w := newWriter(f, opts)
 	for it.Next() {
 		if err := w.Add(it.Entry()); err != nil {
 			_ = f.Close()
@@ -366,7 +393,15 @@ func syncDir(dir string) error {
 type Table struct {
 	f      *os.File
 	index  []indexEntry
+	filter *bloom.Filter
 	footer footer
+
+	// bloomRejects and bloomProbes count Get calls the filter answered
+	// without touching a data block, and Get calls total. They are the
+	// evidence for T5.3's claim about absent-key lookups, and they are
+	// atomic because a Table is shared across reader goroutines.
+	bloomRejects atomic.Uint64
+	bloomProbes  atomic.Uint64
 }
 
 // Open validates the footer magic and format version, then loads and
@@ -419,9 +454,10 @@ func Open(path string) (*Table, error) {
 		_ = f.Close()
 		return nil, fmt.Errorf("sstable: read bloom block of %s: %w", path, err)
 	}
-	if err := verifyBloomStub(bloomBytes); err != nil {
+	filter, err := bloom.Decode(bloomBytes)
+	if err != nil {
 		_ = f.Close()
-		return nil, err
+		return nil, fmt.Errorf("%w: %s: %w", ErrCorruptTable, path, err)
 	}
 
 	indexBytes := make([]byte, ft.indexLength)
@@ -435,7 +471,7 @@ func Open(path string) (*Table, error) {
 		return nil, err
 	}
 
-	return &Table{f: f, index: index, footer: ft}, nil
+	return &Table{f: f, index: index, filter: filter, footer: ft}, nil
 }
 
 // boundsCheck rejects an offset/length pair that does not fit within the
@@ -446,6 +482,15 @@ func boundsCheck(name string, offset, length, fileSize uint64) error {
 		return fmt.Errorf("%w: %s block [offset=%d, length=%d] does not fit in a %d-byte file", ErrCorruptTable, name, offset, length, fileSize)
 	}
 	return nil
+}
+
+// Filter exposes the table's bloom filter for inspection and measurement.
+func (t *Table) Filter() *bloom.Filter { return t.filter }
+
+// BloomStats reports how many Get calls this table has served and how many of
+// them the filter answered without reading a block.
+func (t *Table) BloomStats() (probes, rejects uint64) {
+	return t.bloomProbes.Load(), t.bloomRejects.Load()
 }
 
 // Close closes the underlying file.
@@ -480,6 +525,21 @@ func (t *Table) blockFor(key []byte) (int, bool) {
 // exists; a tombstone is returned as a found entry with Tombstone set, the
 // same contract as memtable.Memtable.Get.
 func (t *Table) Get(key []byte) (e memtable.Entry, found bool, err error) {
+	// The filter is consulted first, ahead of the index binary search and
+	// well ahead of any block read. That ordering is the entire point: on a
+	// key this table does not hold, the whole lookup collapses to one hash
+	// and k bit tests, with no I/O at all.
+	//
+	// This is only sound because the filter has no false negatives. A false
+	// positive costs a wasted block read and nothing else; a false negative
+	// would return "absent" for a key the table holds, and the LSM read path
+	// would move on to older levels and answer with stale data or nothing.
+	t.bloomProbes.Add(1)
+	if !t.filter.MayContain(key) {
+		t.bloomRejects.Add(1)
+		return memtable.Entry{}, false, nil
+	}
+
 	i, ok := t.blockFor(key)
 	if !ok {
 		return memtable.Entry{}, false, nil

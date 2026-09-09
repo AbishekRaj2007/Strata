@@ -419,6 +419,11 @@ type Table struct {
 	// atomic because a Table is shared across reader goroutines.
 	bloomRejects atomic.Uint64
 	bloomProbes  atomic.Uint64
+
+	// bytesRead counts bytes actually pulled from the file, excluding what
+	// the cache served. It is the read amplification the T5.3 block-size
+	// sweep measures: the ratio of this to the bytes a caller asked for.
+	bytesRead atomic.Uint64
 }
 
 // Open validates the footer magic and format version, then loads and
@@ -523,6 +528,10 @@ func (t *Table) BloomStats() (probes, rejects uint64) {
 	return t.bloomProbes.Load(), t.bloomRejects.Load()
 }
 
+// BytesRead reports how many bytes this table has pulled from the file,
+// excluding blocks the cache served.
+func (t *Table) BytesRead() uint64 { return t.bytesRead.Load() }
+
 // Close closes the underlying file.
 func (t *Table) Close() error {
 	if err := t.f.Close(); err != nil {
@@ -557,6 +566,8 @@ func (t *Table) loadBlock(i int) (*Block, error) {
 	if _, err := t.f.ReadAt(data, int64(e.blockOffset)); err != nil {
 		return nil, fmt.Errorf("sstable: read block %d: %w", i, err)
 	}
+	t.bytesRead.Add(uint64(len(data)))
+
 	blk, err := NewBlock(data)
 	if err != nil {
 		return nil, err
@@ -579,6 +590,17 @@ func (t *Table) blockFor(key []byte) (int, bool) {
 // exists; a tombstone is returned as a found entry with Tombstone set, the
 // same contract as memtable.Memtable.Get.
 func (t *Table) Get(key []byte) (e memtable.Entry, found bool, err error) {
+	return t.get(key, true)
+}
+
+// getUnfiltered is the same lookup with the bloom filter bypassed. It is the
+// pre-T5.1 read path, kept so the T5.3 study can measure what the filter buys
+// against the identical code rather than against a different build.
+func (t *Table) getUnfiltered(key []byte) (memtable.Entry, bool, error) {
+	return t.get(key, false)
+}
+
+func (t *Table) get(key []byte, useFilter bool) (e memtable.Entry, found bool, err error) {
 	// The filter is consulted first, ahead of the index binary search and
 	// well ahead of any block read. That ordering is the entire point: on a
 	// key this table does not hold, the whole lookup collapses to one hash
@@ -588,10 +610,12 @@ func (t *Table) Get(key []byte) (e memtable.Entry, found bool, err error) {
 	// positive costs a wasted block read and nothing else; a false negative
 	// would return "absent" for a key the table holds, and the LSM read path
 	// would move on to older levels and answer with stale data or nothing.
-	t.bloomProbes.Add(1)
-	if !t.filter.MayContain(key) {
-		t.bloomRejects.Add(1)
-		return memtable.Entry{}, false, nil
+	if useFilter {
+		t.bloomProbes.Add(1)
+		if !t.filter.MayContain(key) {
+			t.bloomRejects.Add(1)
+			return memtable.Entry{}, false, nil
+		}
 	}
 
 	i, ok := t.blockFor(key)

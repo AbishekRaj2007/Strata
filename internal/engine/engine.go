@@ -3,8 +3,6 @@ package engine
 import (
 	"errors"
 	"fmt"
-
-	"github.com/AbishekRaj2007/Strata/internal/cache"
 )
 
 // Size limits from docs/format.md §0.1, enforced at the protocol boundary
@@ -51,13 +49,6 @@ type Stats struct {
 	// INFO must not print a write-stall count for an engine that cannot
 	// stall.
 	Memtable *RotationStats
-
-	// BlockCache reports the SSTable block cache, or nil for an engine that
-	// has none. Like Memtable, a pointer rather than a value: "this engine
-	// does not cache blocks" and "the cache has served no reads" are
-	// different facts, and INFO must not print a 0% hit rate for an engine
-	// that never had a cache to miss.
-	BlockCache *cache.Stats
 }
 
 // ScanResult is one page of a Scan. Cursor is the value to pass to the next

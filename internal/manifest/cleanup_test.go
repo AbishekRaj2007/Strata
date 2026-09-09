@@ -43,8 +43,7 @@ func TestDeleteObsolete(t *testing.T) {
 	touch(t, dir, tableName(1))
 
 	// While the file is live, nothing is deleted.
-	deleted, err := vs.DeleteObsolete(dir)
-	n := len(deleted)
+	n, err := vs.DeleteObsolete(dir)
 	if err != nil {
 		t.Fatalf("DeleteObsolete: %v", err)
 	}
@@ -61,8 +60,7 @@ func TestDeleteObsolete(t *testing.T) {
 		t.Fatalf("Apply delete: %v", err)
 	}
 
-	deleted, err = vs.DeleteObsolete(dir)
-	n = len(deleted)
+	n, err = vs.DeleteObsolete(dir)
 	if err != nil {
 		t.Fatalf("DeleteObsolete: %v", err)
 	}
@@ -96,8 +94,8 @@ func TestDeleteObsoleteWaitsForReaders(t *testing.T) {
 		t.Fatalf("Apply delete: %v", err)
 	}
 
-	if deleted, err := vs.DeleteObsolete(dir); err != nil || len(deleted) != 0 {
-		t.Fatalf("DeleteObsolete = %v, %v; want none, nil while a reader holds the version", deleted, err)
+	if n, err := vs.DeleteObsolete(dir); err != nil || n != 0 {
+		t.Fatalf("DeleteObsolete = %d, %v; want 0, nil while a reader holds the version", n, err)
 	}
 	if _, err := os.Stat(filepath.Join(dir, tableName(1))); err != nil {
 		t.Fatalf("file deleted while a reader held a version naming it: %v", err)
@@ -105,8 +103,8 @@ func TestDeleteObsoleteWaitsForReaders(t *testing.T) {
 
 	vs.Release(held)
 
-	if deleted, err := vs.DeleteObsolete(dir); err != nil || len(deleted) != 1 {
-		t.Fatalf("DeleteObsolete = %v, %v; want one file, nil after release", deleted, err)
+	if n, err := vs.DeleteObsolete(dir); err != nil || n != 1 {
+		t.Fatalf("DeleteObsolete = %d, %v; want 1, nil after release", n, err)
 	}
 }
 

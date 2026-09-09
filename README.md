@@ -35,19 +35,6 @@ make check      # what CI runs: vet + test
 make help       # list all targets
 ```
 
-## Tuning defaults
-
-Every default below traces to a measurement in [docs/benchmarks.md](docs/benchmarks.md), which records the hardware, the reproduction command, three runs and the variance.
-
-| Parameter | Default | Why |
-|---|---|---|
-| Bloom bits per key | 10 | 0.83% false positive rate for 1.25 bytes per key — the knee of the measured cost curve |
-| Bloom probes, k | 7 | Derived as (m/n)·ln2 and confirmed by measurement: 3.27% false positives at k=2, 0.83% at k=7, 5.50% at k=20 |
-| SSTable block size | 4 KiB | **Provisional.** For random point reads, 1 KiB measured 1.5× faster with 4× less read amplification. Retained pending a range-scan benchmark. |
-| Block cache | 64 MiB | 95.6% hit rate on a 78 MiB working set at Zipf s=1.05; quadrupling it to 256 MiB buys 0.6 points |
-
-Absent-key lookups are **10.6× faster** with the bloom filter than without, measured against the identical read path with the filter bypassed.
-
 ## Documentation
 
 | Document | Contents |

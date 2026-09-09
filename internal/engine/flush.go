@@ -7,7 +7,6 @@ import (
 	"path/filepath"
 	"sync"
 
-	"github.com/AbishekRaj2007/Strata/internal/cache"
 	"github.com/AbishekRaj2007/Strata/internal/manifest"
 	"github.com/AbishekRaj2007/Strata/internal/sstable"
 )
@@ -77,15 +76,6 @@ type Flusher struct {
 	// costs nothing and makes DrainQueue safe to call from anywhere.
 	flushMu sync.Mutex
 
-	// tableOpts are the bloom and block-size parameters every table this
-	// flusher writes is built with. Set once before Start.
-	tableOpts sstable.WriterOptions
-
-	// blocks is the shared block cache, so that a file retired by a version
-	// install has its cached blocks dropped along with it. Set once before
-	// Start; nil is usable.
-	blocks *cache.Cache
-
 	mu      sync.Mutex
 	err     error
 	flushed uint64
@@ -102,19 +92,6 @@ func NewFlusher(set *memtableSet, dir string, log *manifest.Log, vs *manifest.Ve
 		trigger: make(chan struct{}, 1),
 		quit:    make(chan struct{}),
 	}
-}
-
-// SetBlockCache attaches the shared block cache, so that files retired by a
-// version install have their blocks evicted. It must be called before Start.
-func (f *Flusher) SetBlockCache(c *cache.Cache) {
-	f.blocks = c
-}
-
-// SetTableOptions selects the build parameters for the tables this flusher
-// writes. It must be called before Start, since it is not synchronised
-// against a flush in flight.
-func (f *Flusher) SetTableOptions(opts sstable.WriterOptions) {
-	f.tableOpts = opts
 }
 
 // Start runs the flusher in the background until Stop.
@@ -194,24 +171,6 @@ func (f *Flusher) DrainQueue() error {
 	}
 }
 
-// dropObsolete deletes every file that has lost its last reference and
-// evicts the cached blocks of each one.
-//
-// The eviction is not an optimisation. Without it the cache would fill with
-// blocks of files that no longer exist, in proportion to compaction
-// throughput, and start evicting live data to hold data no reader can ever
-// want.
-func (f *Flusher) dropObsolete() error {
-	deleted, err := f.vs.DeleteObsolete(f.dir)
-	for _, number := range deleted {
-		f.blocks.EvictFile(number)
-	}
-	if err != nil {
-		return fmt.Errorf("flush: delete obsolete files: %w", err)
-	}
-	return nil
-}
-
 // FlushOldest flushes the memtable at the front of the immutable queue and
 // reports whether the queue was already empty.
 func (f *Flusher) FlushOldest() (empty bool, err error) {
@@ -231,7 +190,7 @@ func (f *Flusher) FlushOldest() (empty bool, err error) {
 	// entry naming it, so on return the table is durable -- but no durable
 	// state references it yet.
 	number := f.vs.NextFileNumber()
-	info, err := sstable.WriteTableOpts(f.dir, number, sl.table.NewIterator(), f.tableOpts)
+	info, err := sstable.WriteTable(f.dir, number, sl.table.NewIterator())
 	if err != nil {
 		return false, fmt.Errorf("flush: build sstable %d: %w", number, err)
 	}
@@ -286,19 +245,6 @@ func (f *Flusher) FlushOldest() (empty bool, err error) {
 	}
 	if _, err := f.vs.Apply(&edit); err != nil {
 		return false, fmt.Errorf("flush: install version: %w", err)
-	}
-
-	// The install may have retired files, and a retired file's blocks are
-	// dead weight the LRU will never reclaim on its own -- nothing reads a
-	// deleted file again, so its blocks never become least recently used by
-	// access. They just sit at the tail while eviction works around them.
-	//
-	// This runs after the manifest fsync, never before. Deleting a file the
-	// committed manifest still references would be permanent data loss, and
-	// the whole point of Obsolete is that it only names files no held
-	// version does.
-	if err := f.dropObsolete(); err != nil {
-		return false, err
 	}
 
 	if err := f.step(StepAfterManifestSync); err != nil {

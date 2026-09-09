@@ -856,13 +856,7 @@ Introducing model testing here rather than in Phase 7 is deliberate. Every subse
 
 The satisfying phase — small code, dramatic measurable effect. Benchmark before and after; that delta is a graph for your README.
 
-### - [x] T5.1 — Implement the bloom filter and integrate it
-
-> **Complete.** `internal/bloom` holds the builder and reader; `internal/sstable` writes a real bloom block and consults it in `Table.Get` before the index search and any block read. `k` is derived as (m/n)·ln2 rather than hardcoded.
->
-> Done-when, measured: 100,000 keys inserted, 1,000,000 probes, **zero** false negatives, and a measured false positive rate of 0.8158% against a theoretical 0.8194% — well inside 2×. The rate is bounded from below as well as above, since a filter measuring far under theory means the probes are not distributed as the derivation assumes.
->
-> The trap is handled by making the false negative bound exactly zero rather than a ratio, and by two decisions that a "few is fine" reading would have gotten wrong: a nil filter answers "maybe" rather than "absent", and every byte of the bloom block is covered by a checksum sweep at open, because clearing one bit turns a present key into a reported absence.
+### - [ ] T5.1 — Implement the bloom filter and integrate it
 
 **Effort:** 4–5 h · **Model:** write it yourself; Opus 5 to check your parameter derivation
 
@@ -876,15 +870,7 @@ Derive the optimal `k` for your `m/n` rather than hardcoding it, and be able to 
 
 ---
 
-### - [x] T5.2 — Implement the sharded block cache
-
-> **Complete.** `internal/cache` is an LRU keyed by `(file_number, block_offset)`, bounded in bytes, split into 16 independently locked shards, with hits and misses exposed through `INFO`. `Flusher.dropObsolete` evicts a file's blocks when the file is deleted, after the manifest fsync and never before.
->
-> Done-when, measured: a Zipf(s=1.2) workload over 20,000 blocks against a 16 MiB cache reaches a **91.98%** hit rate, and 2,000 rounds of warm-a-file/evict-the-oldest hold at 8 resident files and 2 MiB with no growth.
->
-> The flat-memory assertion took two attempts and the first one is the lesson: bytes are bounded by capacity whether the resident blocks are live or dead, and the deletion index can be cleared without the blocks being dropped, so neither detects the leak. Counting distinct files with blocks still resident does — with `EvictFile` disabled it peaks at 43 dead files and the cache pins itself at capacity, evicting live data to hold data no reader can want.
->
-> Checksums are verified on cache hits as well as file reads (CLAUDE.md §11), and a block that fails verification is never inserted, so one bad read cannot become a permanently bad read.
+### - [ ] T5.2 — Implement the sharded block cache
 
 **Effort:** 3–4 h · **Model:** Sonnet 5, with Opus 5 reviewing the eviction-during-delete path
 
@@ -898,15 +884,7 @@ The file-deletion eviction path is the one that bites. Miss it and you leak memo
 
 ---
 
-### - [x] T5.3 — Produce the tuning study
-
-> **Complete.** `docs/benchmarks.md` §"Bloom filters and block cache" records bits-per-key across 4/8/10/16, block size across 1/4/16/64 KiB, and cache size across 1 MiB–256 MiB at two Zipf skews. Three runs each, medians and full ranges, with the reproduction commands.
->
-> Done-when, measured: absent-key lookups are **10.6× faster** with the filter than without on a cold cache (516.5 ns against 5,464 ns), against the same file with only the filter bypassed. Warm, the ratio is 4.2× — recorded rather than hidden, since the cold figure is the one that describes a real absent-key lookup, whose block is by definition not resident.
->
-> Every parameter recommendation in the README traces to a row in the study, including the one the study does not support: for random point reads 1 KiB blocks measured 1.5× faster than the 4 KiB default with 4× less read amplification, and the default is retained only pending a range-scan benchmark that has not been run. The bits-per-key recommendation rests on the false-positive cost table, not on the latency sweep, which cannot separate 8, 10 and 16 from run-to-run variance.
->
-> The trap is handled: three runs, median and range for every row, and no ranking claimed between configurations whose ranges overlap.
+### - [ ] T5.3 — Produce the tuning study
 
 **Effort:** 3–4 h · **Model:** Claude Cowork or Opus 5 — multi-run analysis work
 

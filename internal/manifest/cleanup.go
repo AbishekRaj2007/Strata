@@ -11,24 +11,19 @@ import (
 )
 
 // DeleteObsolete removes every file that has reached zero references, and
-// returns the numbers of the files it deleted.
+// returns how many it deleted.
 //
 // It is safe to call at any time precisely because Obsolete only reports files
 // no held version names. A file already gone is not an error: a previous run
 // may have deleted it and crashed before the manifest recorded anything, and
 // re-deleting is the expected outcome rather than a fault.
-//
-// It returns the numbers rather than a count because a deleted file leaves
-// state elsewhere in the process -- its blocks in the read cache -- and the
-// caller cannot drop that without knowing which files went. A count would
-// force the caller to guess.
-func (vs *VersionSet) DeleteObsolete(dir string) ([]uint64, error) {
+func (vs *VersionSet) DeleteObsolete(dir string) (int, error) {
 	numbers := vs.Obsolete()
 	if len(numbers) == 0 {
-		return nil, nil
+		return 0, nil
 	}
 
-	var deleted []uint64
+	deleted := 0
 	for _, number := range numbers {
 		path := filepath.Join(dir, fmt.Sprintf("%06d.sst", number))
 		if err := os.Remove(path); err != nil {
@@ -37,13 +32,13 @@ func (vs *VersionSet) DeleteObsolete(dir string) ([]uint64, error) {
 			}
 			return deleted, fmt.Errorf("manifest: delete %s: %w", path, err)
 		}
-		deleted = append(deleted, number)
+		deleted++
 	}
 
 	// The deletions are not durable until the directory entries are.
 	// Reporting success before that would let a caller record the files as
 	// gone when a crash could still bring them back.
-	if len(deleted) > 0 {
+	if deleted > 0 {
 		if err := SyncDir(dir); err != nil {
 			return deleted, err
 		}

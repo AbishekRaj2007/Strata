@@ -10,6 +10,7 @@ import (
 	"strings"
 	"sync"
 
+	"github.com/AbishekRaj2007/Strata/internal/cache"
 	"github.com/AbishekRaj2007/Strata/internal/manifest"
 	"github.com/AbishekRaj2007/Strata/internal/memtable"
 	"github.com/AbishekRaj2007/Strata/internal/sstable"
@@ -31,6 +32,19 @@ type Options struct {
 	// SyncPolicy selects the WAL durability mode. The zero value is
 	// wal.SyncAlways, so the safe choice is the one you get by not choosing.
 	SyncPolicy wal.SyncPolicy
+
+	// BlockCacheBytes bounds the shared SSTable block cache. Zero selects
+	// cache.DefaultCapacityBytes; a negative value disables the cache
+	// entirely, which is what the tuning study's baseline run needs.
+	BlockCacheBytes int64
+
+	// BitsPerKey sizes the bloom filter on every table this engine writes.
+	// Zero selects bloom.DefaultBitsPerKey.
+	BitsPerKey int
+
+	// BlockSize is the target SSTable data block size. Zero selects the
+	// docs/format.md §3.2 default.
+	BlockSize int
 }
 
 // LSM is the durable storage engine: memtables in front of a WAL, flushed
@@ -48,6 +62,7 @@ type LSM struct {
 	set     *memtableSet
 	flusher *Flusher
 	tables  tableReader
+	cache   *cache.Cache
 
 	policy wal.SyncPolicy
 
@@ -81,6 +96,14 @@ func Open(opts Options) (*LSM, error) {
 	}
 	if err := os.MkdirAll(opts.Dir, 0o700); err != nil {
 		return nil, fmt.Errorf("engine: create %s: %w", opts.Dir, err)
+	}
+
+	// A negative capacity means "no cache", which the tuning study needs as
+	// its baseline. A nil *cache.Cache is usable, so nothing downstream has
+	// to branch on it.
+	var blocks *cache.Cache
+	if opts.BlockCacheBytes >= 0 {
+		blocks = cache.New(opts.BlockCacheBytes)
 	}
 
 	vs, log, err := openManifest(opts.Dir)
@@ -141,11 +164,17 @@ func Open(opts Options) (*LSM, error) {
 		vs:      vs,
 		log:     log,
 		set:     set,
-		tables:  &dirTables{dir: opts.Dir},
+		tables:  &dirTables{dir: opts.Dir, cache: blocks},
+		cache:   blocks,
 		policy:  opts.SyncPolicy,
 		flusher: nil,
 	}
 	e.flusher = NewFlusher(set, opts.Dir, log, vs)
+	e.flusher.SetBlockCache(blocks)
+	e.flusher.SetTableOptions(sstable.WriterOptions{
+		BitsPerKey: opts.BitsPerKey,
+		BlockSize:  opts.BlockSize,
+	})
 
 	// The replayed state is loaded through the normal write path so it lands
 	// in the new WAL too. That costs one rewrite of the recovered data and
@@ -455,10 +484,15 @@ func (e *LSM) Stats() (Stats, error) {
 	}
 
 	rotation := e.set.Stats()
-	return Stats{
+	st := Stats{
 		SyncPolicy: e.policy.String(),
 		Memtable:   &rotation,
-	}, nil
+	}
+	if e.cache != nil {
+		cs := e.cache.Stats()
+		st.BlockCache = &cs
+	}
+	return st, nil
 }
 
 // Close stops the flusher, flushes what is queued, and releases everything.
@@ -511,7 +545,10 @@ func (e *LSM) scanSources(sources []memtable.Iterator, v *manifest.Version) ([]m
 
 	for level := 0; level < manifest.NumLevels; level++ {
 		for _, fm := range v.Files(level) {
-			tbl, err := sstable.Open(filepath.Join(e.dir, fm.Name()))
+			tbl, err := sstable.OpenWith(filepath.Join(e.dir, fm.Name()), sstable.OpenOptions{
+				Number: fm.Number,
+				Cache:  e.cache,
+			})
 			if err != nil {
 				closeAll()
 				return nil, nil, fmt.Errorf("scan: open table %d: %w", fm.Number, err)

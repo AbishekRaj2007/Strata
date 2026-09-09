@@ -330,6 +330,24 @@ func (c *conn) cmdInfo(args [][]byte) error {
 		fmt.Fprintf(&sb, "write_stall_seconds:%.3f\r\n", m.StallDuration.Seconds())
 	}
 
+	// Omitted for an engine with no block cache, for the same reason the
+	// memtable section is: a 0.00% hit rate would read as a cache that is
+	// failing rather than a cache that does not exist.
+	if bc := s.BlockCache; bc != nil {
+		sb.WriteString("# Block cache\r\n")
+		fmt.Fprintf(&sb, "block_cache_hits:%d\r\n", bc.Hits)
+		fmt.Fprintf(&sb, "block_cache_misses:%d\r\n", bc.Misses)
+		// The rate is derived rather than left to the client, because the
+		// obvious client-side derivation -- hits over hits plus misses,
+		// sampled twice -- is wrong across a restart and awkward everywhere
+		// else. Reporting it once, correctly, costs nothing.
+		fmt.Fprintf(&sb, "block_cache_hit_rate:%.4f\r\n", bc.HitRate())
+		fmt.Fprintf(&sb, "block_cache_bytes:%d\r\n", bc.Bytes)
+		fmt.Fprintf(&sb, "block_cache_capacity:%d\r\n", bc.Capacity)
+		fmt.Fprintf(&sb, "block_cache_blocks:%d\r\n", bc.Entries)
+		fmt.Fprintf(&sb, "block_cache_evictions:%d\r\n", bc.Evicted)
+	}
+
 	return c.w.WriteBulkString([]byte(sb.String()))
 }
 

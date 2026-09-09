@@ -205,7 +205,13 @@ u32     crc32c               covers every preceding byte of this block
 
 Bit *i* of the array is byte `i / 8`, bit `i % 8` counting from the least significant. Probes derive from a single 64-bit xxHash of the user key by double hashing: `h1 = uint32(h)`, `h2 = uint32(h >> 32)`, and probe *i* addresses bit `(h1 + i*h2) % (bit_array_len * 8)` for *i* in `[0, num_probes)`.
 
+`h1 + i*h2` is computed in 32-bit arithmetic and wraps on overflow — that is, the sum is taken modulo 2³² before the modulo by the bit count. A reader that widened the accumulator to 64 bits would address different bits and report false negatives against filters this writer produced, so the width is normative, not incidental.
+
+The hash is xxHash64 with seed 0 (the `XXH64` of the reference implementation), over the user key bytes exactly.
+
 Keys are added by user key only, with the sequence number excluded, so all versions of a key share one filter entry.
+
+`bits_per_key` and `num_probes` are recorded for diagnostics and for the reader to report; a reader must take the bit count from `bit_array_len` rather than recomputing it from `bits_per_key` and a key count, since the writer floors `bit_array_len` at 8 bytes so that very small tables still filter usefully.
 
 A table with no keys writes `bit_array_len = 0` and every lookup reports absent.
 

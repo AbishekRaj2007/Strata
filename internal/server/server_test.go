@@ -10,6 +10,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/AbishekRaj2007/Strata/internal/cache"
 	"github.com/AbishekRaj2007/Strata/internal/engine"
 	"github.com/AbishekRaj2007/Strata/internal/log"
 	"github.com/AbishekRaj2007/Strata/internal/resp"
@@ -287,6 +288,65 @@ func TestInfo(t *testing.T) {
 	// than reported as zeros.
 	if strings.Contains(body, "# Memtable") {
 		t.Errorf("INFO reported a memtable for an engine that has none:\n%s", body)
+	}
+	// Same for the block cache: a 0.00% hit rate would read as a cache that
+	// is failing rather than a cache that does not exist.
+	if strings.Contains(body, "# Block cache") {
+		t.Errorf("INFO reported a block cache for an engine that has none:\n%s", body)
+	}
+}
+
+// cachedEngine reports block cache statistics, so the INFO rendering can be
+// tested against a known set of numbers rather than whatever a live cache
+// happens to have accumulated.
+type cachedEngine struct {
+	engine.Engine
+	stats cache.Stats
+}
+
+func (c cachedEngine) Stats() (engine.Stats, error) {
+	s, err := c.Engine.Stats()
+	if err != nil {
+		return s, err
+	}
+	s.BlockCache = &c.stats
+	return s, nil
+}
+
+// TestInfoReportsBlockCache covers T5.2's requirement that hit and miss
+// counters are exposed through INFO. A cache whose effectiveness cannot be
+// observed cannot be tuned, which is the whole subject of T5.3.
+func TestInfoReportsBlockCache(t *testing.T) {
+	eng := cachedEngine{
+		Engine: engine.NewMemory(),
+		stats: cache.Stats{
+			Hits:     900,
+			Misses:   100,
+			Bytes:    4096,
+			Entries:  1,
+			Capacity: 64 << 20,
+			Evicted:  17,
+		},
+	}
+
+	c := dial(t, newTestServerWith(t, eng))
+
+	body := string(c.do("INFO").Bytes)
+	for _, want := range []string{
+		"# Block cache",
+		"block_cache_hits:900",
+		"block_cache_misses:100",
+		// Derived server-side: the obvious client-side derivation is wrong
+		// across a restart, and reporting it once correctly costs nothing.
+		"block_cache_hit_rate:0.9000",
+		"block_cache_bytes:4096",
+		"block_cache_capacity:67108864",
+		"block_cache_blocks:1",
+		"block_cache_evictions:17",
+	} {
+		if !strings.Contains(body, want) {
+			t.Errorf("INFO missing %q in:\n%s", want, body)
+		}
 	}
 }
 

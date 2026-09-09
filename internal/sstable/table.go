@@ -12,6 +12,7 @@ import (
 	"sync/atomic"
 
 	"github.com/AbishekRaj2007/Strata/internal/bloom"
+	"github.com/AbishekRaj2007/Strata/internal/cache"
 	"github.com/AbishekRaj2007/Strata/internal/memtable"
 )
 
@@ -390,8 +391,24 @@ func syncDir(dir string) error {
 // Table is an opened, immutable SSTable ready for reads. The footer and
 // index are loaded and validated at Open; data blocks are loaded and
 // checksum-verified on demand.
+// OpenOptions attaches a table to the shared block cache. A zero value opens
+// an uncached table, which is what every test that only cares about the file
+// format wants.
+type OpenOptions struct {
+	// Number is the table's file number, the first half of every cache key.
+	// It must be the real number: two tables sharing a number would serve
+	// each other's blocks, and the checksums would pass because the bytes
+	// are individually valid.
+	Number uint64
+
+	// Cache is the shared block cache, or nil for no caching.
+	Cache *cache.Cache
+}
+
 type Table struct {
 	f      *os.File
+	number uint64
+	cache  *cache.Cache
 	index  []indexEntry
 	filter *bloom.Filter
 	footer footer
@@ -409,6 +426,12 @@ type Table struct {
 // or that is shorter than a footer, is rejected before any other field is
 // read.
 func Open(path string) (*Table, error) {
+	return OpenWith(path, OpenOptions{})
+}
+
+// OpenWith is Open with the block cache attached. A zero OpenOptions is
+// exactly Open.
+func OpenWith(path string, opts OpenOptions) (*Table, error) {
 	f, err := os.Open(path)
 	if err != nil {
 		return nil, fmt.Errorf("sstable: open %s: %w", path, err)
@@ -471,7 +494,14 @@ func Open(path string) (*Table, error) {
 		return nil, err
 	}
 
-	return &Table{f: f, index: index, filter: filter, footer: ft}, nil
+	return &Table{
+		f:      f,
+		number: opts.Number,
+		cache:  opts.Cache,
+		index:  index,
+		filter: filter,
+		footer: ft,
+	}, nil
 }
 
 // boundsCheck rejects an offset/length pair that does not fit within the
@@ -501,14 +531,38 @@ func (t *Table) Close() error {
 	return nil
 }
 
-// loadBlock reads and checksum-verifies data block i.
+// loadBlock returns data block i, from the cache if it is resident and from
+// the file otherwise.
+//
+// The checksum is verified on every call, cache hit included. That is not
+// belt-and-braces: cached bytes live in process memory for as long as the
+// cache holds them, and memory is not a medium that only fails at rest. The
+// checksum is what makes a corrupted block a reported error rather than a
+// wrong answer, and skipping it on the hot path would mean the fast path is
+// the one without the safety check.
+//
+// The block is only inserted after it decodes. Caching bytes that failed
+// verification would turn one bad read into a permanently bad read, since
+// every subsequent lookup would be served the same broken block from memory
+// without ever going back to the file.
 func (t *Table) loadBlock(i int) (*Block, error) {
 	e := t.index[i]
+	key := cache.Key{FileNumber: t.number, BlockOffset: e.blockOffset}
+
+	if data, ok := t.cache.Get(key); ok {
+		return NewBlock(data)
+	}
+
 	data := make([]byte, e.blockLength)
 	if _, err := t.f.ReadAt(data, int64(e.blockOffset)); err != nil {
 		return nil, fmt.Errorf("sstable: read block %d: %w", i, err)
 	}
-	return NewBlock(data)
+	blk, err := NewBlock(data)
+	if err != nil {
+		return nil, err
+	}
+	t.cache.Put(key, data)
+	return blk, nil
 }
 
 // blockFor returns the index of the first data block whose largest key is

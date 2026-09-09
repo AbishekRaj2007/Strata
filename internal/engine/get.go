@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"path/filepath"
 
+	"github.com/AbishekRaj2007/Strata/internal/cache"
 	"github.com/AbishekRaj2007/Strata/internal/manifest"
 	"github.com/AbishekRaj2007/Strata/internal/memtable"
 	"github.com/AbishekRaj2007/Strata/internal/sstable"
@@ -19,19 +20,23 @@ type tableReader interface {
 }
 
 // dirTables reads tables straight from the data directory, opening and
-// closing one per lookup.
+// closing one per lookup, with data blocks served from a shared cache.
 //
-// That is deliberately the naive implementation: it is obviously correct, and
-// correctness is what Phase 4 is establishing. T5.2 replaces it with a cache,
-// and the interface above is the seam where that happens.
+// The file handle is still opened per lookup. That is the naive part, and it
+// stays naive on purpose: what a point lookup actually pays for is the block
+// reads, and those are what the cache removes. Caching open handles is a
+// separate concern with its own lifetime problem -- a handle must not outlive
+// the version that keeps the file undeleted -- and mixing it into T5.2 would
+// buy less than it costs to reason about.
 type dirTables struct {
-	dir string
+	dir   string
+	cache *cache.Cache
 }
 
 func (d *dirTables) lookup(number uint64, key []byte) (memtable.Entry, bool, error) {
 	path := filepath.Join(d.dir, fmt.Sprintf("%06d.sst", number))
 
-	tbl, err := sstable.Open(path)
+	tbl, err := sstable.OpenWith(path, sstable.OpenOptions{Number: number, Cache: d.cache})
 	if err != nil {
 		return memtable.Entry{}, false, fmt.Errorf("get: open table %d: %w", number, err)
 	}

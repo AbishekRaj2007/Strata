@@ -114,6 +114,18 @@ func TestReadersNeverTouchADeletedFile(t *testing.T) {
 		}()
 	}
 
+	// Wait for the readers to actually be reading before compacting.
+	//
+	// Without this the test is load-dependent: on a busy machine the
+	// compactor can run all 200 compactions before the scheduler gets to a
+	// single reader goroutine, leaving zero reads and a test that fails on
+	// its own "proved nothing" guard. Worse, a slightly different schedule
+	// would leave a handful of reads and pass while overlapping almost
+	// nothing -- which is the same as not running the test, but silent.
+	for tracker.reads.Load() == 0 {
+		runtimeGosched()
+	}
+
 	var compactorWG sync.WaitGroup
 	compactorWG.Add(1)
 	go func() {

@@ -130,3 +130,191 @@ Not yet run. Measures write, read, and space amplification against the level siz
 ## Optimisation log (T8.3)
 
 Not yet run. One row per change, before and after, including the optimisations that did not work.
+
+## Bloom filters and block cache — the tuning study (T5.3)
+
+Measured 2026-09-09 on the machine above. Everything in this section is a Go
+benchmark or a Go test, so no server is involved and no network is in the path;
+each row isolates one parameter of the SSTable read path.
+
+All benchmark rows are three runs at `-benchtime 200000x`, median reported with
+the full range. The cost tables are computed rather than timed and are
+deterministic — same seed, same layout — so they carry no variance column.
+
+Reproduce the whole study:
+
+```sh
+go test ./internal/sstable/ -run '^$' -bench 'Tuning' -benchtime 200000x -count 3
+go test ./internal/sstable/ -run 'TestTuning' -v -count 3
+go test ./internal/cache/  -run 'TestTuningCacheSizeAgainstHitRate' -v -count 3
+```
+
+Fixture for every SSTable row: one table, 100,000 keys of 16 bytes, values of
+22 bytes, 10 bits per key and 4 KiB blocks unless the row varies them.
+
+### What the bloom filter buys on an absent key
+
+Both arms run the identical code against the identical file. The only
+difference is whether the filter is consulted — `Table.Get` against
+`Table.getUnfiltered` — so the delta cannot be attributed to anything else
+about the table.
+
+| Block cache | Filter | Run 1 | Run 2 | Run 3 | Median | Speedup |
+|---|---|---|---|---|---|---|
+| cold | consulted | 614.9 ns | 516.5 | 460.1 | **516.5 ns** | |
+| cold | bypassed | 5608 ns | 5190 | 5464 | **5464 ns** | **10.6×** |
+| warm | consulted | 495.3 ns | 513.1 | 623.7 | **513.1 ns** | |
+| warm | bypassed | 2305 ns | 2132 | 2179 | **2179 ns** | **4.2×** |
+
+T5.1's target is 5×. The cold figure of **10.6×** clears it; the warm figure of
+4.2× does not.
+
+The two numbers answer different questions and the cold one is the relevant
+one. An absent key's blocks are, by definition, the blocks nothing has read —
+so on a real absent-key lookup the cache is cold for exactly that block, and
+the filter is skipping a `pread`. The warm row measures something narrower and
+still worth knowing: even with the block already in memory, consulting the
+filter is 4.2× faster than decoding the block, because the block read is not
+the whole cost — the restart-array binary search and the entry scan are the
+rest, and the filter skips those too.
+
+### What the bloom filter costs on a present key
+
+The control. A filter cannot help a key that is present: it says "maybe", the
+block is read anyway, and the only effect is one hash and seven bit tests of
+added work.
+
+| Filter | Run 1 | Run 2 | Run 3 | Median |
+|---|---|---|---|---|
+| consulted | 3612 ns | 3408 | 3505 | **3505 ns** |
+| bypassed | 3613 ns | 3316 | 3775 | **3613 ns** |
+
+The medians differ by 3% in favour of the *filtered* path, which is not a real
+effect — the ranges overlap almost completely. The honest reading is that the
+filter's cost on a present key is below this benchmark's resolution, which is
+what the arithmetic predicts: one xxHash plus seven bit tests against a 3.5 µs
+lookup.
+
+### Bits per key
+
+Memory cost and false positive rate (deterministic, from
+`TestTuningBitsPerKeyCost`):
+
+| bits/key | k | bloom block | bytes/key | measured FP rate | theoretical |
+|---|---|---|---|---|---|
+| 4 | 3 | 50,016 B | 0.50 | 14.83% | 14.69% |
+| 8 | 6 | 100,016 B | 1.00 | 2.17% | 2.16% |
+| 10 | 7 | 125,016 B | 1.25 | **0.83%** | 0.82% |
+| 16 | 11 | 200,016 B | 2.00 | 0.05% | 0.05% |
+
+Absent-key latency at each setting, warm cache:
+
+| bits/key | Run 1 | Run 2 | Run 3 | Median | Range |
+|---|---|---|---|---|---|
+| 4 | 785.3 ns | 672.6 | 850.8 | **785.3 ns** | 672.6–850.8 |
+| 8 | 488.0 ns | 429.8 | 539.0 | **488.0 ns** | 429.8–539.0 |
+| 10 | 401.9 ns | 486.6 | 500.7 | **486.6 ns** | 401.9–500.7 |
+| 16 | 629.2 ns | 379.1 | 434.4 | **434.4 ns** | 379.1–629.2 |
+
+**Finding, stated carefully:** only the 4-bit configuration separates from the
+others by more than run-to-run variance. Its 14.8% false positive rate means
+roughly one absent lookup in seven still pays for a full block read, and that
+shows up as ~300 ns of median latency. From 8 bits upward the ranges overlap
+and this benchmark cannot distinguish them.
+
+So the recommendation of **10 bits per key** does not rest on the latency
+sweep, which does not support it. It rests on the cost table: 10 bits buys a
+0.83% false positive rate for 1.25 bytes per key, where 8 bits gives 2.17% for
+1.00 and 16 bits gives 0.05% for 2.00. Going 8 → 10 removes about 60% of the
+remaining false positives for 0.25 bytes per key; going 10 → 16 removes 94% of
+what is left but costs 0.75 bytes per key, and at 0.83% there is little left
+worth buying. Saying this plainly matters more than producing a latency graph
+with a convenient minimum in it.
+
+### Block size
+
+Read amplification (deterministic, from `TestTuningBlockSizeCost`; 10,000
+lookups spread across the keyspace by a stride of 7,919 so consecutive reads do
+not land in the same block):
+
+| block size | data blocks | file bytes | bytes read per lookup |
+|---|---|---|---|
+| 1 KiB | 3,704 | 3,916,859 | **994.7** |
+| 4 KiB | 893 | 3,788,868 | 4,074.0 |
+| 16 KiB | 221 | 3,765,500 | 16,448.1 |
+| 64 KiB | 56 | 3,756,824 | 65,927.2 |
+
+Present-key latency, no block cache:
+
+| block size | Run 1 | Run 2 | Run 3 | Median |
+|---|---|---|---|---|
+| 1 KiB | 5222 ns | 5597 | 5088 | **5222 ns** |
+| 4 KiB | 7392 ns | 7701 | 7944 | **7701 ns** |
+| 16 KiB | 14,047 ns | 14,573 | 15,265 | **14,573 ns** |
+| 64 KiB | 41,837 ns | 42,321 | 41,381 | **41,837 ns** |
+
+Read amplification is very close to linear in block size, and latency tracks
+it: a random point lookup reads one block and uses about 38 bytes of it, so
+the cost of the read is the cost of the block. At 64 KiB a lookup moves 65 KB
+to answer a 38-byte question — 1,700× amplification.
+
+**Finding that contradicts the default:** for pure random point reads, 1 KiB
+blocks are **1.5× faster** than the 4 KiB default and read 4× fewer bytes. The
+larger index that costs — 3,704 entries instead of 893, and a file 128 KB
+larger from the extra per-block restart and trailer overhead — does not show up
+as latency, because the index binary search is in memory and grows only
+logarithmically.
+
+**The default stays at 4 KiB, and this study does not justify that.** What it
+measures is random point reads, which is the workload block size is worst for.
+Range scans amortise a block across many entries and pull the other way, as
+does the per-block index memory once a database holds thousands of tables
+rather than one. Neither has been measured yet. Recording this as an open
+question is the honest outcome; changing a durable format default on one
+workload's evidence would not be.
+
+### Cache size
+
+Zipf-distributed reads over 20,000 distinct 4 KiB blocks — 78 MiB of data —
+500,000 accesses. The generator is seeded, so all three runs are byte-identical
+and the table has no variance to report; the run-to-run check confirms the
+measurement is deterministic rather than that it is stable under noise.
+
+| capacity | resident blocks | hit rate, s=1.05 | hit rate, s=1.20 |
+|---|---|---|---|
+| 1 MiB | 256 | 52.76% | 72.46% |
+| 4 MiB | 1,024 | 67.94% | 83.66% |
+| 16 MiB | 4,096 | 82.61% | **91.98%** |
+| 64 MiB | 16,384 | **95.59%** | **96.82%** |
+| 256 MiB | 19,144 | 96.17% | 96.82% |
+
+The knee is at 64 MiB for this working set. Going 16 → 64 MiB buys 13 points at
+s=1.05; going 64 → 256 MiB buys 0.6 points at s=1.05 and nothing at all at
+s=1.20, because at that skew the tail past 64 MiB is accessed so rarely that
+holding it resident is wasted memory.
+
+Two things this table makes concrete. First, the hit rate is a property of the
+workload's skew at least as much as of the cache: at 1 MiB, moving from s=1.05
+to s=1.20 is worth 20 points, more than a 16× capacity increase buys at the
+lower skew. Second, T5.2's ">90% on a Zipfian workload" is met at 16 MiB for a
+78 MiB working set — 20% of the data — which is the ordinary bargain a cache
+offers and worth stating as a ratio rather than as an absolute.
+
+**Recommendation: 64 MiB**, the current default, on the evidence above. It is
+the knee for a working set of this size; a database whose hot set is much
+larger should scale it, and this table gives the shape of the curve to scale
+along.
+
+### Summary of defaults
+
+| Parameter | Default | Measurement it rests on |
+|---|---|---|
+| Bloom bits per key | 10 | 0.83% false positive rate at 1.25 bytes/key; the knee of the cost table above |
+| Bloom probes, k | 7 | Derived as (m/n)·ln2, confirmed by `TestExcessProbesMakeTheFilterWorse`: 3.27% at k=2, 0.83% at k=7, 5.50% at k=20 |
+| Block size | 4 KiB | **Not supported by this study for point reads** — 1 KiB measured 1.5× faster. Retained pending a scan benchmark. |
+| Block cache | 64 MiB | 95.6% hit rate at s=1.05 on a 78 MiB working set; 256 MiB buys 0.6 more points |
+
+Machine conditions: idle desktop, AC power, CPU governor `powersave`, no
+thermal throttling observed. Benchmark variance across the three runs is 5–35%
+on the sub-microsecond rows, which is why the bits-per-key finding above is
+stated as "cannot distinguish" rather than as a ranking.

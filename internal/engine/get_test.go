@@ -19,6 +19,10 @@ func newFakeTables() *fakeTables {
 	return &fakeTables{files: map[uint64]map[string]memtable.Entry{}}
 }
 
+// Reads counts the lookups the fake served, which is the same number the
+// real reader counts for read amplification.
+func (f *fakeTables) Reads() uint64 { return uint64(len(f.visited)) }
+
 func (f *fakeTables) put(number uint64, e memtable.Entry) {
 	if f.files[number] == nil {
 		f.files[number] = map[string]memtable.Entry{}

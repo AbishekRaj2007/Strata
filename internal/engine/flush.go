@@ -91,9 +91,10 @@ type Flusher struct {
 	// to L0, so it is the only event that can put L0 over its trigger.
 	onFlush func()
 
-	mu      sync.Mutex
-	err     error
-	flushed uint64
+	mu           sync.Mutex
+	err          error
+	flushed      uint64
+	bytesWritten uint64
 }
 
 // NewFlusher wires a flusher to a memtable set, a manifest log, and the
@@ -165,6 +166,15 @@ func (f *Flusher) Flushed() uint64 {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	return f.flushed
+}
+
+// BytesWritten reports the total size of the tables committed by flushes. It
+// is one of the two terms in write amplification, kept apart from
+// compaction's because the two answer different questions.
+func (f *Flusher) BytesWritten() uint64 {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return f.bytesWritten
 }
 
 func (f *Flusher) run() {
@@ -323,6 +333,7 @@ func (f *Flusher) FlushOldest() (empty bool, err error) {
 
 	f.mu.Lock()
 	f.flushed++
+	f.bytesWritten += uint64(info.Size)
 	f.mu.Unlock()
 
 	// L0 just grew, which is the only way it can. Tell the compactor after

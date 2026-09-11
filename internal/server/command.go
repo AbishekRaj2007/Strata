@@ -376,6 +376,34 @@ func (c *conn) cmdInfo(args [][]byte) error {
 		fmt.Fprintf(&sb, "compaction_soft_delay_seconds:%.3f\r\n", cs.SoftDelayDuration.Seconds())
 	}
 
+	// The three costs the leveled layout trades against each other. Each
+	// ratio is printed next to the counters it came from: a write
+	// amplification of 1.0 over four bytes written means nothing, and a
+	// reader given only the ratio cannot tell.
+	if a := s.Ampl; a != nil {
+		sb.WriteString("# Amplification\r\n")
+		fmt.Fprintf(&sb, "user_bytes_written:%d\r\n", a.UserBytesWritten)
+		fmt.Fprintf(&sb, "flush_bytes_written:%d\r\n", a.FlushBytesWritten)
+		fmt.Fprintf(&sb, "compaction_bytes_written:%d\r\n", a.CompactionBytesWritten)
+		fmt.Fprintf(&sb, "write_amplification:%.3f\r\n", a.Write())
+
+		fmt.Fprintf(&sb, "gets:%d\r\n", a.Gets)
+		fmt.Fprintf(&sb, "table_reads:%d\r\n", a.TableReads)
+		fmt.Fprintf(&sb, "read_amplification:%.3f\r\n", a.Read())
+
+		fmt.Fprintf(&sb, "disk_bytes_live:%d\r\n", a.DiskBytesLive)
+		// Space amplification needs a live logical byte count, which cannot
+		// be maintained without reading every key being overwritten. It is
+		// measured by COMPACT instead, and reported as unmeasured until
+		// then rather than as a ratio of zero.
+		if a.LogicalMeasured {
+			fmt.Fprintf(&sb, "logical_bytes_live:%d\r\n", a.LogicalBytesLive)
+			fmt.Fprintf(&sb, "space_amplification:%.3f\r\n", a.Space())
+		} else {
+			sb.WriteString("space_amplification:unmeasured (run COMPACT)\r\n")
+		}
+	}
+
 	// The shape of the tree, which is what makes the compaction figures
 	// above interpretable. Empty levels are omitted -- an LSM is sparse by
 	// design, and four blank lines bury the two that hold data.

@@ -9,6 +9,7 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"sync/atomic"
 
 	"github.com/AbishekRaj2007/Strata/internal/cache"
 	"github.com/AbishekRaj2007/Strata/internal/compaction"
@@ -77,8 +78,20 @@ type LSM struct {
 	// compactionOpts is kept so Stats can report each level's target
 	// alongside its actual size.
 	compactionOpts compaction.Options
-	tables         tableReader
-	cache          *cache.Cache
+
+	// userBytes and gets are the two denominators of the amplification
+	// figures: what the workload asked for, against what the disk did.
+	userBytes atomic.Uint64
+	gets      atomic.Uint64
+
+	// logicalLive is the last measurement of live logical bytes, taken by
+	// Compact over a settled tree. measured guards it against being read as
+	// a real zero.
+	amplMu      sync.Mutex
+	logicalLive uint64
+	measured    bool
+	tables      tableReader
+	cache       *cache.Cache
 
 	policy wal.SyncPolicy
 
@@ -459,6 +472,8 @@ func (e *LSM) Put(key, value []byte) error {
 		return err
 	}
 
+	e.userBytes.Add(uint64(len(key) + len(value)))
+
 	if _, _, err := e.set.Add(key, value, false); err != nil {
 		return err
 	}
@@ -471,6 +486,7 @@ func (e *LSM) Get(key []byte) ([]byte, error) {
 	if err := ValidateKey(key); err != nil {
 		return nil, err
 	}
+	e.gets.Add(1)
 	if err := e.checkOpen(); err != nil {
 		return nil, err
 	}
@@ -527,6 +543,11 @@ func (e *LSM) Delete(key []byte) (bool, error) {
 		return false, err
 	}
 
+	// A delete writes a key and no value, and costs the disk a record all
+	// the same. Counting it keeps write amplification honest for a
+	// delete-heavy workload.
+	e.userBytes.Add(uint64(len(key)))
+
 	if _, _, err := e.set.Add(key, nil, true); err != nil {
 		return false, err
 	}
@@ -542,11 +563,13 @@ func (e *LSM) Stats() (Stats, error) {
 
 	rotation := e.set.Stats()
 	cs := e.compactor.Stats()
+	ampl := e.Amplification()
 	st := Stats{
 		SyncPolicy: e.policy.String(),
 		Memtable:   &rotation,
 		Compaction: &cs,
 		Levels:     levelStats(e.vs.Current(), e.compactionOpts),
+		Ampl:       &ampl,
 	}
 	if e.cache != nil {
 		cs := e.cache.Stats()
@@ -742,6 +765,52 @@ func (e *LSM) Flush() error {
 	return e.compactor.Drain()
 }
 
+// measureLive records the live logical byte count of the settled tree, which
+// is the denominator of space amplification. It must be called only after a
+// drain.
+func (e *LSM) measureLive() error {
+	logical, err := measureLogicalBytes(e.dir, e.vs.Current())
+	if err != nil {
+		return err
+	}
+
+	e.amplMu.Lock()
+	e.logicalLive, e.measured = logical, true
+	e.amplMu.Unlock()
+	return nil
+}
+
+// Amplification reports the three costs the leveled layout trades against
+// each other. The space figure is from the last Compact; the other two are
+// cumulative and always current.
+func (e *LSM) Amplification() Amplification {
+	cs := e.compactor.Stats()
+
+	e.amplMu.Lock()
+	logical, measured := e.logicalLive, e.measured
+	e.amplMu.Unlock()
+
+	return Amplification{
+		UserBytesWritten:       e.userBytes.Load(),
+		FlushBytesWritten:      e.flusher.BytesWritten(),
+		CompactionBytesWritten: cs.BytesWritten,
+		Gets:                   e.gets.Load(),
+		TableReads:             e.tables.Reads(),
+		DiskBytesLive:          diskBytes(e.vs.Current()),
+		LogicalBytesLive:       logical,
+		LogicalMeasured:        measured,
+	}
+}
+
+// diskBytes is the total size of every table the version names.
+func diskBytes(v *manifest.Version) uint64 {
+	var total uint64
+	for level := 0; level < manifest.NumLevels; level++ {
+		total += v.LevelBytes(level)
+	}
+	return total
+}
+
 // Compact forces the tree to settle: the memtable is flushed and every level
 // compacted until none is over budget.
 //
@@ -751,5 +820,10 @@ func (e *LSM) Flush() error {
 // different things: FLUSHDB asks for durability at a known point, COMPACT
 // asks for a steady state to measure.
 func (e *LSM) Compact() error {
-	return e.Flush()
+	if err := e.Flush(); err != nil {
+		return err
+	}
+	// The tree is settled, which is the only point at which live logical
+	// bytes can be counted by a single top-down walk.
+	return e.measureLive()
 }

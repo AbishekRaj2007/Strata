@@ -67,10 +67,14 @@ type Stats struct {
 	Compaction *compaction.Stats
 
 	// Levels describes the shape of the tree, one entry per level. It is
-	// what makes the amplification figures above interpretable: a write
+	// what makes the amplification figures interpretable: a write
 	// amplification of 20x means something different at three levels than at
 	// six.
 	Levels []LevelStats
+
+	// Ampl reports write, read and space amplification, or nil for an
+	// engine that does not measure them.
+	Ampl *Amplification
 }
 
 // LevelStats is one level's contribution to the tree's shape.

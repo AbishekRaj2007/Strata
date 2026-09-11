@@ -1,6 +1,7 @@
 package compaction
 
 import (
+	"errors"
 	"fmt"
 
 	"github.com/AbishekRaj2007/Strata/internal/cache"
@@ -29,6 +30,11 @@ type Committer struct {
 	// Dir is the data directory.
 	Dir string
 
+	// OnStep, when non-nil, is consulted at each step of the sequence below.
+	// It exists so a test can stop the commit at an exact instant and
+	// inspect what is on disk -- see CommitStep.
+	OnStep func(CommitStep) error
+
 	// Log is the manifest the edit is appended to. Its Append fsyncs.
 	Log *manifest.Log
 
@@ -40,6 +46,33 @@ type Committer struct {
 	// cannot reclaim them on its own. Nil is usable.
 	Cache *cache.Cache
 }
+
+// CommitStep names an instant in the commit sequence, for the fault
+// injection hook that proves the two-state rule holds under a crash.
+//
+// The steps either side of the fsync are the ones that matter. Stopping at
+// them and reopening the directory reproduces exactly what a kill -9 leaves
+// behind: the signal discards the process, not the page cache, so every byte
+// already written is still there on restart.
+type CommitStep int
+
+const (
+	// StepBeforeManifestSync is the "it never happened" window. The outputs
+	// are on disk and fully durable, and nothing references them.
+	StepBeforeManifestSync CommitStep = iota
+
+	// StepAfterManifestSync is immediately past the commit point. The edit is
+	// durable, so the compaction has happened -- but the input files are
+	// still on disk, since nothing has swept them yet.
+	StepAfterManifestSync
+
+	// StepAfterDelete is the end of a complete commit.
+	StepAfterDelete
+)
+
+// ErrCommitAborted is what a fault injection hook returns to simulate a crash
+// at a chosen step. It is not a real failure mode.
+var ErrCommitAborted = errors.New("compaction: commit aborted by fault injection")
 
 // Edit builds the version edit that commits a compaction: a DELETE for every
 // input at the level it currently sits at, and an ADD for every output at the
@@ -109,9 +142,17 @@ func (cm *Committer) Commit(c *Compaction, res *Result) (*manifest.Version, erro
 		return nil, fmt.Errorf("compaction: edit does not apply to the current version: %w", err)
 	}
 
+	if err := cm.step(StepBeforeManifestSync); err != nil {
+		return nil, err
+	}
+
 	// Step 2: the commit point.
 	if err := cm.Log.Append(edit); err != nil {
 		return nil, fmt.Errorf("compaction: commit: %w", err)
+	}
+
+	if err := cm.step(StepAfterManifestSync); err != nil {
+		return nil, err
 	}
 
 	// Step 3. A failure here is unrecoverable by construction -- the dry run
@@ -127,7 +168,14 @@ func (cm *Committer) Commit(c *Compaction, res *Result) (*manifest.Version, erro
 	if err := cm.dropObsolete(); err != nil {
 		return next, err
 	}
-	return next, nil
+	return next, cm.step(StepAfterDelete)
+}
+
+func (cm *Committer) step(s CommitStep) error {
+	if cm.OnStep == nil {
+		return nil
+	}
+	return cm.OnStep(s)
 }
 
 // dropObsolete deletes every file that has lost its last reference and evicts

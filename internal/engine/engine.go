@@ -5,6 +5,7 @@ import (
 	"fmt"
 
 	"github.com/AbishekRaj2007/Strata/internal/cache"
+	"github.com/AbishekRaj2007/Strata/internal/compaction"
 )
 
 // Size limits from docs/format.md §0.1, enforced at the protocol boundary
@@ -58,6 +59,29 @@ type Stats struct {
 	// different facts, and INFO must not print a 0% hit rate for an engine
 	// that never had a cache to miss.
 	BlockCache *cache.Stats
+
+	// Compaction reports the compactor's counters, or nil for an engine that
+	// does not compact. A pointer for the same reason as the two above: a
+	// stall count of zero must not be printed for an engine that cannot
+	// stall.
+	Compaction *compaction.Stats
+
+	// Levels describes the shape of the tree, one entry per level. It is
+	// what makes the amplification figures above interpretable: a write
+	// amplification of 20x means something different at three levels than at
+	// six.
+	Levels []LevelStats
+}
+
+// LevelStats is one level's contribution to the tree's shape.
+type LevelStats struct {
+	Level int
+	Files int
+	Bytes uint64
+
+	// TargetBytes is the level's budget. Zero for L0, which is bounded by
+	// file count rather than bytes.
+	TargetBytes uint64
 }
 
 // ScanResult is one page of a Scan. Cursor is the value to pass to the next

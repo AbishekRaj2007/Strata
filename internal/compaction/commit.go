@@ -118,8 +118,10 @@ func Edit(c *Compaction, res *Result) *manifest.VersionEdit {
 //
 //  1. Check the edit applies to the current version. A rejected edit must
 //     never reach the manifest.
-//  2. Append the edit and fsync. This is the commit point.
-//  3. Swap the version pointer and release the inputs' references.
+//  2. Append the edit and fsync, then swap the version pointer and release
+//     the inputs' references. The fsync is the commit point; the two halves
+//     are one atomic step because the flusher writes the same manifest.
+//  3. (part of step 2.)
 //  4. Delete files that reached zero references, and drop their blocks.
 //
 // Step 1 is not merely defensive. Once step 2 returns, the durable manifest
@@ -146,22 +148,20 @@ func (cm *Committer) Commit(c *Compaction, res *Result) (*manifest.Version, erro
 		return nil, err
 	}
 
-	// Step 2: the commit point.
-	if err := cm.Log.Append(edit); err != nil {
+	// Steps 2 and 3, as one atomic step. The flusher appends to the same
+	// manifest, so appending and installing separately would let the two
+	// committers order the file differently from memory.
+	//
+	// A failure inside Commit after the fsync is unrecoverable by
+	// construction -- the dry run above is what makes it near-impossible --
+	// so it is reported as such rather than retried.
+	next, err := cm.Versions.Commit(cm.Log, edit)
+	if err != nil {
 		return nil, fmt.Errorf("compaction: commit: %w", err)
 	}
 
 	if err := cm.step(StepAfterManifestSync); err != nil {
 		return nil, err
-	}
-
-	// Step 3. A failure here is unrecoverable by construction -- the dry run
-	// above is what makes it near-impossible -- so it is reported as such
-	// rather than retried.
-	next, err := cm.Versions.Apply(edit)
-	if err != nil {
-		return nil, fmt.Errorf("compaction: install version after a durable commit, "+
-			"the database must be reopened: %w", err)
 	}
 
 	// Step 4, and only now.

@@ -57,6 +57,17 @@ type Scheduler struct {
 	quit    chan struct{}
 	wg      sync.WaitGroup
 
+	// runMu serialises whole compactions. Pick, Run and Commit are each safe
+	// on their own, but a compaction spans all three, and two overlapping
+	// ones pick from the same version, choose the same files, and the second
+	// to commit names inputs the first already deleted.
+	//
+	// It is needed because compaction has two drivers: the background
+	// goroutine, and any caller of Drain -- which is what FLUSHDB and
+	// COMPACT use to settle the tree synchronously. Compaction is serial by
+	// design anyway, so the lock costs nothing it was not already paying.
+	runMu sync.Mutex
+
 	// mu guards everything below, and is the lock stalled writers wait on.
 	mu      sync.Mutex
 	cond    *sync.Cond
@@ -137,6 +148,13 @@ func NewScheduler(cfg SchedulerConfig) *Scheduler {
 		quit:    make(chan struct{}),
 	}
 	s.cond = sync.NewCond(&s.mu)
+
+	// Shutdown cancels a merge in flight. Wiring it here rather than making
+	// the caller do it means a scheduler that can be stopped always has an
+	// executor that can be interrupted.
+	if s.executor != nil && s.executor.Cancel == nil {
+		s.executor.Cancel = s.quit
+	}
 	return s
 }
 
@@ -304,6 +322,9 @@ func (s *Scheduler) run() {
 // quiescence synchronously, and so tests can step it deterministically
 // instead of racing the background loop.
 func (s *Scheduler) CompactOnce() (bool, error) {
+	s.runMu.Lock()
+	defer s.runMu.Unlock()
+
 	// Acquire, not Current: the merge opens the input files, so the version
 	// naming them must be held for the whole compaction or they could be
 	// deleted out from under it by a concurrent commit.

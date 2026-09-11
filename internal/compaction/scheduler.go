@@ -2,6 +2,7 @@ package compaction
 
 import (
 	"errors"
+	"fmt"
 	"sync"
 	"time"
 
@@ -326,23 +327,49 @@ func (s *Scheduler) CompactOnce() (bool, error) {
 	defer s.runMu.Unlock()
 
 	// Acquire, not Current: the merge opens the input files, so the version
-	// naming them must be held for the whole compaction or they could be
-	// deleted out from under it by a concurrent commit.
+	// naming them must be held for as long as it is reading them or a
+	// concurrent commit could delete them underneath it.
 	v := s.versions.Acquire()
-	defer s.versions.Release(v)
 
 	c := s.picker.Pick(v)
 	if c == nil {
+		s.versions.Release(v)
 		return false, nil
 	}
 
 	res, err := s.executor.Run(c)
+
+	// Released before the commit, not after. The merge is finished, so
+	// nothing needs the inputs open any more -- and holding the version
+	// through the commit would keep the inputs referenced at the exact
+	// moment the commit sweeps unreferenced files, so they would survive
+	// until some later compaction happened to collect them.
+	s.versions.Release(v)
+
 	if err != nil {
 		return false, err
 	}
 
 	if _, err := s.committer.Commit(c, res); err != nil {
 		return false, err
+	}
+
+	// The accounting identity first, since it is free: every key the merge
+	// surfaced was either written out or dropped as a tombstone. A merge
+	// that lost a key leaves a perfectly well-formed tree, so no structural
+	// check can catch it.
+	if err := CheckResult(res); err != nil {
+		return false, err
+	}
+
+	if s.opts.Verify {
+		report, err := CheckLive(s.executor.Dir, s.versions.Current())
+		if err != nil {
+			return false, err
+		}
+		if !report.OK() {
+			return false, fmt.Errorf("compaction %d: %w", s.stats.Compactions+1, report.Err())
+		}
 	}
 
 	s.mu.Lock()
@@ -380,7 +407,12 @@ func (s *Scheduler) Drain() error {
 			return err
 		}
 		if !worked {
-			return nil
+			// A final sweep, so "settled" also means "no superseded file is
+			// still taking up space". The last commit could not collect its
+			// own inputs if a reader was still holding the version naming
+			// them, and T6.6 measures space amplification against exactly
+			// this point.
+			return s.committer.DropObsolete()
 		}
 	}
 }

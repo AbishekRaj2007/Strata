@@ -178,7 +178,7 @@ func TestCommitKeepsInputsAliveForAHeldVersion(t *testing.T) {
 
 	// Once the reader is done, the next commit's sweep collects it.
 	f.vs.Release(held)
-	if err := f.cm.dropObsolete(); err != nil {
+	if err := f.cm.DropObsolete(); err != nil {
 		t.Fatalf("drop obsolete: %v", err)
 	}
 	if f.exists(in.Number) {

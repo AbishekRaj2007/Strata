@@ -165,7 +165,7 @@ func (cm *Committer) Commit(c *Compaction, res *Result) (*manifest.Version, erro
 	}
 
 	// Step 4, and only now.
-	if err := cm.dropObsolete(); err != nil {
+	if err := cm.DropObsolete(); err != nil {
 		return next, err
 	}
 	return next, cm.step(StepAfterDelete)
@@ -178,14 +178,19 @@ func (cm *Committer) step(s CommitStep) error {
 	return cm.OnStep(s)
 }
 
-// dropObsolete deletes every file that has lost its last reference and evicts
-// its cached blocks.
+// DropObsolete deletes every file that has lost its last reference and
+// evicts its cached blocks.
+//
+// Commit already does this for the files its own edit retired. It is
+// exported because a file whose last reference was held by a reader is not
+// collectable at the instant the commit runs, and something has to collect
+// it afterwards.
 //
 // The eviction is not an optimisation. Compaction retires files continuously,
 // and without it the cache fills with blocks of files that no longer exist --
 // blocks nothing will ever read again, so they never become least recently
 // used by access and the LRU works around them forever.
-func (cm *Committer) dropObsolete() error {
+func (cm *Committer) DropObsolete() error {
 	deleted, err := cm.Versions.DeleteObsolete(cm.Dir)
 	for _, number := range deleted {
 		cm.Cache.EvictFile(number)

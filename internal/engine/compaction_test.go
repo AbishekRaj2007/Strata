@@ -15,6 +15,12 @@ import (
 func compactingEngine(t *testing.T, opts compaction.Options) *LSM {
 	t.Helper()
 
+	// Every compaction in these tests is followed by a full invariant
+	// check. It is far too slow for production and exactly right here: a
+	// violation is reported at the compaction that caused it rather than at
+	// the read that eventually trips over it.
+	opts.Verify = true
+
 	e, err := Open(Options{
 		Dir:        t.TempDir(),
 		Threshold:  1 << 10,
@@ -61,8 +67,15 @@ func TestEngineCompactsL0IntoLowerLevels(t *testing.T) {
 	if v.NumFiles(0) >= 2 {
 		t.Errorf("L0 holds %d files after settling, want fewer than the trigger of 2", v.NumFiles(0))
 	}
-	if v.NumFiles(1) == 0 {
-		t.Fatal("nothing reached L1; compaction never ran")
+	// Somewhere below L0, not L1 specifically: this much data puts L1 over
+	// its own budget too, so a fully settled tree may have cascaded all of
+	// it down to L2.
+	below := 0
+	for level := 1; level < manifest.NumLevels; level++ {
+		below += v.NumFiles(level)
+	}
+	if below == 0 {
+		t.Fatalf("nothing reached a level below L0; compaction never ran (shape %s)", levelShape(v))
 	}
 	if err := v.CheckInvariants(); err != nil {
 		t.Errorf("the settled tree is invalid: %v", err)
@@ -149,7 +162,7 @@ func TestCompactedTreeSurvivesReopen(t *testing.T) {
 		Dir:        dir,
 		Threshold:  1 << 10,
 		SyncPolicy: wal.SyncAlways,
-		Compaction: compaction.Options{L0Trigger: 2, BaseLevelBytes: 8 << 10, TargetFileBytes: 4 << 10},
+		Compaction: compaction.Options{L0Trigger: 2, BaseLevelBytes: 8 << 10, TargetFileBytes: 4 << 10, Verify: true},
 	}
 
 	e, err := Open(opts)
@@ -204,7 +217,7 @@ func TestCloseDuringCompactionIsClean(t *testing.T) {
 		Dir:        dir,
 		Threshold:  1 << 10,
 		SyncPolicy: wal.SyncNever,
-		Compaction: compaction.Options{L0Trigger: 1, BaseLevelBytes: 1 << 10, TargetFileBytes: 1 << 10},
+		Compaction: compaction.Options{L0Trigger: 1, BaseLevelBytes: 1 << 10, TargetFileBytes: 1 << 10, Verify: true},
 	}
 
 	e, err := Open(opts)

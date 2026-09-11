@@ -58,6 +58,15 @@ type Options struct {
 	// discretionary expansion, not a hard limit -- see Pick, where the L0
 	// overlap set is mandatory for correctness and is allowed to exceed it.
 	MaxInputBytes uint64
+
+	// Verify runs the invariant checker after every committed compaction,
+	// failing the compactor on the first violation.
+	//
+	// Off by default because it reads every file in the tree, which is
+	// orders of magnitude more work than the compaction itself. On in test
+	// builds, where it is what turns a compaction bug from "reads return
+	// wrong data three hours in" into "violated at compaction 47".
+	Verify bool
 }
 
 // withDefaults returns opts with every unset field filled in.

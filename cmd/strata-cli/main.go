@@ -13,6 +13,9 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+
+	"github.com/AbishekRaj2007/Strata/internal/compaction"
+	"github.com/AbishekRaj2007/Strata/internal/manifest"
 )
 
 // errNotImplemented marks a subcommand whose plumbing exists but whose engine
@@ -157,15 +160,63 @@ func runManifest(stdout io.Writer, args []string) error {
 }
 
 func runLevels(stdout io.Writer, args []string) error {
-	if _, err := requireExistingPath(args, "data directory"); err != nil {
+	dir, err := requireExistingPath(args, "data directory")
+	if err != nil {
 		return err
 	}
-	return errNotImplemented
+
+	vs, err := manifest.Recover(dir)
+	if err != nil {
+		return err
+	}
+	v := vs.Current()
+
+	levels := compaction.Summarise(v)
+	if len(levels) == 0 {
+		_, err := fmt.Fprintln(stdout, "the tree is empty")
+		return err
+	}
+
+	var sb strings.Builder
+	fmt.Fprintf(&sb, "%-6s %6s %12s\n", "level", "files", "bytes")
+	for _, l := range levels {
+		fmt.Fprintf(&sb, "L%-5d %6d %12d\n", l.Level, l.Files, l.Bytes)
+	}
+	fmt.Fprintf(&sb, "\nlast sequence: %d\n", v.LastSequence())
+
+	_, err = io.WriteString(stdout, sb.String())
+	return err
 }
 
+// runValidate is the outside-the-process half of T6.5. The same checker runs
+// after every compaction in verifying builds; this is how an operator asks
+// the question of a directory nothing is currently running against.
 func runValidate(stdout io.Writer, args []string) error {
-	if _, err := requireExistingPath(args, "data directory"); err != nil {
+	dir, err := requireExistingPath(args, "data directory")
+	if err != nil {
 		return err
 	}
-	return errNotImplemented
+
+	report, err := compaction.CheckDir(dir)
+	if err != nil {
+		return err
+	}
+
+	if report.OK() {
+		_, err := fmt.Fprintf(stdout, "ok: %d files, %d entries, every invariant holds\n",
+			report.FilesChecked, report.EntriesChecked)
+		return err
+	}
+
+	// Every violation is printed, not just the first. They are often
+	// symptoms of one cause, and seeing the set is what identifies it.
+	var sb strings.Builder
+	fmt.Fprintf(&sb, "FAILED: %d violations across %d files\n", len(report.Violations), report.FilesChecked)
+	for _, v := range report.Violations {
+		fmt.Fprintf(&sb, "  %s\n", v)
+	}
+	if _, err := io.WriteString(stdout, sb.String()); err != nil {
+		return err
+	}
+	return fmt.Errorf("%d invariant violations", len(report.Violations))
 }

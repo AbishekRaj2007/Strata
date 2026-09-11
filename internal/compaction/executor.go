@@ -41,6 +41,12 @@ type Executor struct {
 	// NextFileNumber allocates output file numbers from the same monotonic
 	// sequence everything else in the directory uses.
 	NextFileNumber func() uint64
+
+	// Cancel, when non-nil, aborts a merge in flight once it is closed. A
+	// canceled merge removes its outputs and commits nothing, so the tree is
+	// left exactly as it was -- which is what lets shutdown interrupt a long
+	// compaction instead of waiting it out. Nil never cancels.
+	Cancel <-chan struct{}
 }
 
 // Result is what a completed merge produced, before anything references it.
@@ -132,6 +138,14 @@ func (e *Executor) Run(c *Compaction) (res *Result, err error) {
 	for merge.Next() {
 		entry := merge.Entry()
 		res.Keys++
+
+		// Checked per key rather than per block: the deferred cleanup above
+		// turns a cancel into "nothing happened" whatever point it lands on,
+		// so the only cost of checking often is the check itself.
+		if canceled(e.Cancel) {
+			err = ErrCanceled
+			return nil, err
+		}
 
 		// The tombstone rule, and the whole of T6.2's trap. A tombstone may
 		// go only when nothing below the output level could still hold the
@@ -227,6 +241,20 @@ func (e *Executor) openInputs(c *Compaction) ([]*sstable.Table, error) {
 		opened = append(opened, t)
 	}
 	return opened, nil
+}
+
+// canceled reports whether a cancel channel has been closed, without
+// blocking on one that has not.
+func canceled(ch <-chan struct{}) bool {
+	if ch == nil {
+		return false
+	}
+	select {
+	case <-ch:
+		return true
+	default:
+		return false
+	}
 }
 
 // removeTable deletes an output file that a failed compaction abandoned. A

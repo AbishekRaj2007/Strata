@@ -7,7 +7,6 @@ import (
 	"fmt"
 	"hash/crc32"
 	"os"
-	"path/filepath"
 	"sort"
 	"sync/atomic"
 
@@ -343,36 +342,21 @@ func WriteTable(dir string, number uint64, it memtable.Iterator) (Info, error) {
 // WriteTableOpts is WriteTable with the build parameters exposed. A zero
 // WriterOptions is exactly WriteTable.
 func WriteTableOpts(dir string, number uint64, it memtable.Iterator, opts WriterOptions) (Info, error) {
-	path := filepath.Join(dir, fmt.Sprintf("%06d.sst", number))
-
-	f, err := os.OpenFile(path, os.O_CREATE|os.O_EXCL|os.O_WRONLY, 0o600)
+	w, err := Create(dir, number, opts)
 	if err != nil {
-		return Info{}, fmt.Errorf("sstable: create %s: %w", path, err)
+		return Info{}, err
 	}
+	// Abort is a no-op once Finish has run, so deferring it covers every
+	// error path below without a partial file being left behind.
+	defer func() { _ = w.Abort() }()
 
-	w := newWriter(f, opts)
 	for it.Next() {
 		if err := w.Add(it.Entry()); err != nil {
-			_ = f.Close()
 			return Info{}, err
 		}
 	}
 
-	info, err := w.Finish()
-	if err != nil {
-		_ = f.Close()
-		return Info{}, err
-	}
-	if err := f.Close(); err != nil {
-		return Info{}, fmt.Errorf("sstable: close %s: %w", path, err)
-	}
-
-	if err := syncDir(dir); err != nil {
-		return Info{}, err
-	}
-
-	info.Path = path
-	return info, nil
+	return w.Finish()
 }
 
 func syncDir(dir string) error {

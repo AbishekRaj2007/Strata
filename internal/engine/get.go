@@ -3,6 +3,7 @@ package engine
 import (
 	"fmt"
 	"path/filepath"
+	"sync/atomic"
 
 	"github.com/AbishekRaj2007/Strata/internal/cache"
 	"github.com/AbishekRaj2007/Strata/internal/manifest"
@@ -17,6 +18,7 @@ import (
 // to get subtly wrong and must not be disturbed for a performance change.
 type tableReader interface {
 	lookup(number uint64, key []byte) (memtable.Entry, bool, error)
+	Reads() uint64
 }
 
 // dirTables reads tables straight from the data directory, opening and
@@ -31,9 +33,19 @@ type tableReader interface {
 type dirTables struct {
 	dir   string
 	cache *cache.Cache
+
+	// reads counts tables opened, the numerator of read amplification. It
+	// is here rather than in the read path because this is the one place a
+	// table is actually opened, so a future caller cannot forget to count.
+	reads atomic.Uint64
 }
 
+// Reads reports how many tables have been opened for point lookups.
+func (d *dirTables) Reads() uint64 { return d.reads.Load() }
+
 func (d *dirTables) lookup(number uint64, key []byte) (memtable.Entry, bool, error) {
+	d.reads.Add(1)
+
 	path := filepath.Join(d.dir, fmt.Sprintf("%06d.sst", number))
 
 	tbl, err := sstable.OpenWith(path, sstable.OpenOptions{Number: number, Cache: d.cache})

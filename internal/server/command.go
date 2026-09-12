@@ -17,6 +17,11 @@ type flusher interface {
 	Flush() error
 }
 
+// compacter is the optional COMPACT surface: force the tree to settle.
+type compacter interface {
+	Compact() error
+}
+
 // handler executes one command and writes its reply. Arity is checked by the
 // dispatch table before a handler runs, so handlers may index args directly.
 type handler func(c *conn, args [][]byte) error
@@ -348,13 +353,83 @@ func (c *conn) cmdInfo(args [][]byte) error {
 		fmt.Fprintf(&sb, "block_cache_evictions:%d\r\n", bc.Evicted)
 	}
 
+	// Omitted for an engine that does not compact, for the same reason the
+	// sections above are: a stall count of zero would read as "compaction is
+	// keeping up" rather than "there is no compactor".
+	if cs := s.Compaction; cs != nil {
+		sb.WriteString("# Compaction\r\n")
+		fmt.Fprintf(&sb, "compactions:%d\r\n", cs.Compactions)
+		// A non-zero error count means the tree is no longer being
+		// maintained, whatever the other numbers say, so it is printed
+		// even when it is zero.
+		fmt.Fprintf(&sb, "compaction_errors:%d\r\n", cs.CompactionErrors)
+		fmt.Fprintf(&sb, "compaction_bytes_read:%d\r\n", cs.BytesRead)
+		fmt.Fprintf(&sb, "compaction_bytes_written:%d\r\n", cs.BytesWritten)
+		fmt.Fprintf(&sb, "l0_files:%d\r\n", cs.L0Files)
+
+		// Backpressure is named apart from the memtable's write_stalls
+		// above: they are different queues with different cures. A memtable
+		// stall means flushing is behind; a compaction stall means L0 is.
+		fmt.Fprintf(&sb, "compaction_stalls:%d\r\n", cs.Stalls)
+		fmt.Fprintf(&sb, "compaction_stall_seconds:%.3f\r\n", cs.StallDuration.Seconds())
+		fmt.Fprintf(&sb, "compaction_soft_delays:%d\r\n", cs.SoftDelays)
+		fmt.Fprintf(&sb, "compaction_soft_delay_seconds:%.3f\r\n", cs.SoftDelayDuration.Seconds())
+	}
+
+	// The three costs the leveled layout trades against each other. Each
+	// ratio is printed next to the counters it came from: a write
+	// amplification of 1.0 over four bytes written means nothing, and a
+	// reader given only the ratio cannot tell.
+	if a := s.Ampl; a != nil {
+		sb.WriteString("# Amplification\r\n")
+		fmt.Fprintf(&sb, "user_bytes_written:%d\r\n", a.UserBytesWritten)
+		fmt.Fprintf(&sb, "flush_bytes_written:%d\r\n", a.FlushBytesWritten)
+		fmt.Fprintf(&sb, "compaction_bytes_written:%d\r\n", a.CompactionBytesWritten)
+		fmt.Fprintf(&sb, "write_amplification:%.3f\r\n", a.Write())
+
+		fmt.Fprintf(&sb, "gets:%d\r\n", a.Gets)
+		fmt.Fprintf(&sb, "table_reads:%d\r\n", a.TableReads)
+		fmt.Fprintf(&sb, "read_amplification:%.3f\r\n", a.Read())
+
+		fmt.Fprintf(&sb, "disk_bytes_live:%d\r\n", a.DiskBytesLive)
+		// Space amplification needs a live logical byte count, which cannot
+		// be maintained without reading every key being overwritten. It is
+		// measured by COMPACT instead, and reported as unmeasured until
+		// then rather than as a ratio of zero.
+		if a.LogicalMeasured {
+			fmt.Fprintf(&sb, "logical_bytes_live:%d\r\n", a.LogicalBytesLive)
+			fmt.Fprintf(&sb, "space_amplification:%.3f\r\n", a.Space())
+		} else {
+			sb.WriteString("space_amplification:unmeasured (run COMPACT)\r\n")
+		}
+	}
+
+	// The shape of the tree, which is what makes the compaction figures
+	// above interpretable. Empty levels are omitted -- an LSM is sparse by
+	// design, and four blank lines bury the two that hold data.
+	if len(s.Levels) > 0 {
+		sb.WriteString("# Levels\r\n")
+		for _, l := range s.Levels {
+			fmt.Fprintf(&sb, "level%d:files=%d,bytes=%d,target_bytes=%d\r\n",
+				l.Level, l.Files, l.Bytes, l.TargetBytes)
+		}
+	}
+
 	return c.w.WriteBulkString([]byte(sb.String()))
 }
 
 func (c *conn) cmdCompact(args [][]byte) error {
-	// Non-standard, and a no-op until Phase 6 gives it something to do. It
-	// replies OK rather than erroring so the test harness that calls it can
-	// be written now and stay unchanged.
+	// Non-standard, and synchronous: it returns once no level is over
+	// budget. That is what makes it useful for measurement -- T6.6's space
+	// amplification figure is meaningless taken while compaction is still
+	// working through a backlog.
+	comp, ok := c.engine.(compacter)
+	if !ok {
+		return c.w.WriteError("ERR COMPACT is not supported by this engine")
+	}
+	if err := comp.Compact(); err != nil {
+		return c.replyEngineError(err)
+	}
 	return c.w.WriteSimpleString("OK")
 }
 

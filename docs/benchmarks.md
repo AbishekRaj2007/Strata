@@ -107,17 +107,17 @@ This blocks nothing in Phase 2. It must be resolved before T8.2, which is a prof
 
 From plan.md §19. Targets, not promises.
 
-| Workload | Target |
-|---|---|
-| SET, pipelined, sync=interval | 100k+ ops/sec |
-| SET, unpipelined | 30k+ ops/sec |
-| SET, sync=always | 2–5k ops/sec |
-| GET, dataset in cache | 150k+ ops/sec |
-| GET, dataset 10× cache | 20k+ ops/sec |
-| GET, absent key, blooms on | 100k+ ops/sec |
-| p99 latency, mixed load | under 5 ms |
-| Space amplification | under 2× |
-| Write amplification | 10–30× |
+| Workload | Target | Measured |
+|---|---|---|
+| SET, pipelined, sync=interval | 100k+ ops/sec | — |
+| SET, unpipelined | 30k+ ops/sec | — |
+| SET, sync=always | 2–5k ops/sec | — |
+| GET, dataset in cache | 150k+ ops/sec | — |
+| GET, dataset 10× cache | 20k+ ops/sec | — |
+| GET, absent key, blooms on | 100k+ ops/sec | — |
+| p99 latency, mixed load | under 5 ms | — |
+| Space amplification | under 2× | **Met: 1.45×** after overwriting a 1 GB dataset (T6.6) |
+| Write amplification | 10–30× | **Under it at 4.99–6.83×** — the workload is too short to reach the steady state that range describes, see T6.6 |
 
 ## Tuning study (T5.3)
 
@@ -125,7 +125,7 @@ Not yet run. Sweeps bits-per-key, block size, and cache size.
 
 ## Amplification characterisation (T6.6)
 
-Not yet run. Measures write, read, and space amplification against the level size multiplier.
+Run on 2026-09-11. See [the full section below](#amplification--the-three-costs-t66).
 
 ## Optimisation log (T8.3)
 
@@ -318,3 +318,223 @@ Machine conditions: idle desktop, AC power, CPU governor `powersave`, no
 thermal throttling observed. Benchmark variance across the three runs is 5–35%
 on the sub-microsecond rows, which is why the bits-per-key finding above is
 stated as "cannot distinguish" rather than as a ranking.
+
+## Compaction spreads across the keyspace (T6.1)
+
+T6.1's done-when artifact: under a skewed write workload, compaction work has
+to follow the data rather than key position. Produced by
+`TestSweepDistributesCompactionAcrossTheKeyspace`, which drives both the
+round-robin picker and a naive always-take-the-first-file picker through the
+same 120-flush workload against a model of the tree.
+
+The workload puts 80% of writes in the bottom tenth of the keyspace. Ranges 1
+through 9 therefore receive near-identical write volume (161–211 keys each),
+which is what makes position bias separable from following the data.
+
+```
+range        round-robin           naive (always the first file)
+0000-0099    61  ####################   108 ########################################
+0100-0199    50  ################        80 ##############################
+0200-0299    47  ###############         56 #####################
+0300-0399    48  ###############         56 #####################
+0400-0499    48  ###############         57 #####################
+0500-0599    48  ###############         58 #####################
+0600-0699    46  ###############         50 ###################
+0700-0799    47  ###############         41 ###############
+0800-0899    44  ##############          37 ##############
+0900-0999    40  #############           31 ############
+```
+
+Over the nine equally-written ranges, most-compacted against least-compacted:
+
+| Picker | Spread |
+|---|---|
+| Naive, always the first file of a level | 2.58× |
+| Round-robin over key position | **1.25×** |
+
+The naive picker's decay is monotonic in key position across nine ranges that
+were written identically — pure position bias, not the workload. The
+round-robin pointer removes it. Range 0 is compacted most under both, which is
+correct: that is where the data is.
+
+Evenness across the *whole* keyspace would be the wrong target, and coverage
+does not discriminate at all — every L0 compaction spans most of the keyspace,
+so both pickers touch every range. Spread over the equally-written ranges is
+the measure that separates them.
+
+```sh
+go test ./internal/compaction -run TestSweepDistributesCompactionAcrossTheKeyspace -v
+```
+
+## Amplification — the three costs (T6.6)
+
+The three costs leveled compaction trades against each other, measured rather
+than assumed. ADR-002 accepted "10–30× write amplification in exchange for at
+most one file read per level below L0, and space amplification under 2×"
+without measuring any of it. This is the measurement, and one of the three
+figures does not match what the ADR predicted.
+
+### What is counted
+
+| Figure | Definition as implemented | Counted in |
+|---|---|---|
+| Write amplification | (flush bytes + compaction bytes) written as SSTables ÷ key and value bytes passed to `Put`/`Delete` | `internal/engine/amplification.go` |
+| Read amplification | SSTables opened ÷ point lookups served | `dirTables.lookup`, the one place a table is opened |
+| Space amplification | bytes of live SSTables ÷ key and value bytes of the live data, each key counted once | measured by `COMPACT` over a settled tree |
+
+Three deliberate choices, each of which moves the number:
+
+**The WAL is excluded from write amplification.** It is a fixed cost per write
+that no compaction policy changes. Including it would add a roughly constant
+term to every row and blur the comparison the sweep exists to make.
+
+**Read amplification is per lookup served, not per lookup that reached disk.**
+A lookup answered from a memtable opens no table and pulls the ratio below
+one. That is the honest framing, because it is equally true of the latency the
+ratio is there to explain.
+
+**Space amplification is measured only over a settled tree.** It cannot be
+maintained incrementally without reading the previous size of every key being
+overwritten — a read on every write. So `COMPACT` drains compaction to
+quiescence and then walks the tree once, counting each key at the newest level
+holding it. Taken mid-backlog the figure measures the backlog, which is T6.6's
+stated trap. Tombstones count as zero logical bytes while still occupying
+disk: unreclaimed tombstones are part of what space amplification measures.
+
+### The characterisation: write it, overwrite it, settle, measure
+
+plan.md's procedure exactly — write 1 GB, overwrite it entirely, force
+compaction, and confirm disk usage returns near 1 GB.
+
+1,048,576 keys × 1 KiB values, 1 MB memtable, L1 target 4 MB, multiplier 10,
+2 MB output files, `sync=never`. One run; at 18 minutes it is not a
+three-run row, and the default-scale table below carries the variance
+instead.
+
+| Stage | User bytes | Disk bytes written | Write | Disk bytes live | Space | Levels |
+|---|---|---|---|---|---|---|
+| After first write | 1,085,276,160 | 5,148,138,574 | 4.74× | 1,106,346,521 | **1.02×** | L0=3 L1=4 L2=41 L3=398 L4=1049 |
+| After full overwrite | 2,170,552,320 | 11,045,567,310 | 5.09× | 1,573,145,858 | **1.45×** | L0=3 L1=4 L2=41 L3=398 L4=1049 |
+
+The done-when condition is space amplification under 2× after settling: **1.45×**
+after every key in a 1 GB dataset has been overwritten once. The disk holds
+1.57 GB for 1.09 GB of live data. Overwriting the entire dataset — which
+doubles the bytes ever written and adds no logical data — grew the disk by 42%,
+not by 100%, which is the garbage compaction reclaimed.
+
+```sh
+mkdir -p ~/.cache/strata-bench   # a real filesystem; /tmp here is tmpfs
+TMPDIR=$HOME/.cache/strata-bench STRATA_AMPL_MB=1024 \
+  go test ./internal/engine -run TestSpaceAmplificationAfterFullOverwrite -v -timeout 40m
+```
+
+### The level multiplier sweep
+
+The same workload at multipliers 4, 10 and 20 — written twice, so compaction
+is rewriting data that is already settled, which is where write amplification
+actually comes from. 1 GB, one run per multiplier (≈5 minutes each):
+
+| Multiplier | Write | Space | Read (tables/get) | Disk bytes live | Levels |
+|---|---|---|---|---|---|
+| 4 | 6.83× | 1.30× | 1.00 | 1,416,019,618 | L0=3 L1=2 L2=15 L3=21 L4=255 L5=984 L6=63 |
+| 10 | 5.67× | 1.45× | 1.00 | 1,572,104,271 | L0=3 L1=4 L2=40 L3=397 L4=1047 |
+| 20 | **4.99×** | **1.10×** | 1.00 | 1,194,341,522 | L0=3 L1=2 L2=82 L3=1047 |
+
+Write amplification against the multiplier, 1 GB:
+
+```
+  m=4   ###################################################### 6.83x   (7 levels)
+  m=10  ############################################# 5.67x            (5 levels)
+  m=20  ######################################## 4.99x                 (4 levels)
+```
+
+**Write amplification falls as the multiplier rises**, which is the expected
+shape and the reason to state it: a larger multiplier means fewer levels, and
+a byte is rewritten roughly once per level it descends through. Going from 4
+to 20 removes three levels and 27% of the bytes written.
+
+The usual cost of that trade — each level's compactions become larger, since
+one file at level *i* now overlaps ~20 files at *i+1* rather than ~4 — is
+bounded here rather than visible, because `MaxInputBytes` caps discretionary
+expansion. It would show up as compaction latency, which this row does not
+measure, not as a worse ratio.
+
+**Space amplification does not move monotonically** (1.30 → 1.45 → 1.10) and
+the ordering is not stable across runs — see the variance in the default-scale
+table below, where m=4 moved between 1.49× and 1.81×. This figure depends on
+how recently each level happened to settle, not only on the geometry. The
+honest reading is that all three multipliers land comfortably under 2× and
+this workload does not separate them on space.
+
+**Read amplification is 1.00 tables per lookup in every row**, which is the
+non-overlap invariant paying off exactly as designed. The key range check rules
+out every file that cannot hold the key without opening it, so the first file
+actually opened is the one holding the answer. This is the number ADR-002
+traded write amplification for.
+
+### Default scale, three runs
+
+The same measurements at the size `go test ./...` runs every time — 24 MB over
+24,576 keys. Three runs, median reported, variance stated.
+
+The single-engine characterisation is byte-identical across all three runs
+(write 2.71× then 3.22×, space 1.02× then 1.28×, read 1.00), because the
+workload is deterministic and `COMPACT` settles the tree synchronously before
+each measurement. The sweep varies slightly, since the background compactor's
+timing decides how far each level has settled when the drain begins:
+
+| Multiplier | Write (run 1/2/3) | Median | Space (run 1/2/3) | Median |
+|---|---|---|---|---|
+| 4 | 3.94× / 3.92× / 3.93× | **3.93×** | 1.49× / 1.49× / 1.81× | **1.49×** |
+| 10 | 3.54× / 3.58× / 3.62× | **3.58×** | 1.29× / 1.29× / 1.25× | **1.29×** |
+| 20 | 3.52× / 3.56× / 3.50× | **3.52×** | 1.25× / 1.25× / 1.29× | **1.25×** |
+
+Write amplification is stable to within 3% across runs. Space amplification is
+stable to within 3% except for the one m=4 outlier at 1.81×, which is the
+effect described above: at 24 MB with a multiplier of 4 the tree only just
+reaches L3, so whether the last cascade completed before the drain moves the
+figure by a fifth. It is reported rather than dropped.
+
+At this scale m=10 and m=20 produce nearly the same tree, because 24 MB is not
+enough data for a multiplier of 20 to bind — which is precisely why the 1 GB
+run above exists.
+
+```sh
+go test ./internal/engine -run 'SpaceAmplificationAfterFullOverwrite|AmplificationAcrossLevelMultipliers' -v
+```
+
+### Write amplification is below what ADR-002 predicted
+
+Measured 4.99–6.83× at 1 GB, against the ADR's accepted range of 10–30×. The
+ADR is not wrong and this is not a win; the two figures measure different
+durations.
+
+10–30× is the steady-state cost of data that has descended the whole tree
+several times over a long-running workload. These runs write each key exactly
+twice and then stop, so most bytes have been rewritten once or twice, not once
+per level per level-fill. The measured figure is a lower bound that would rise
+towards the ADR's range under a workload run long enough for the lower levels
+to be rewritten repeatedly.
+
+Two smaller contributions, both real: the 4 MB L1 target used here is smaller
+than production would use, so the upper levels fill and stop being rewritten
+sooner; and `MaxInputBytes` caps discretionary input expansion, which trades
+some write amplification for bounded compaction latency.
+
+The plan.md §19 target table lists write amplification of 10–30× as a target.
+Measuring under it on a short workload should not be recorded as having met a
+target — the correct statement is that this workload does not run long enough
+to reach the steady state that target describes.
+
+### Machine and conditions
+
+The test machine above. `/tmp` on this host is tmpfs, so every figure in this
+section was measured with `TMPDIR` pointed at ext4 on the NVMe device. For
+amplification specifically the medium does not change the ratios — these are
+byte counts, not timings — but it changes the runtime, and a figure recorded
+against a RAM-backed filesystem should say so.
+
+Conditions: idle desktop, AC power, CPU governor `powersave`, 17 GB free on
+the target filesystem, no thermal throttling observed. `sync=never` throughout,
+deliberately: the WAL is excluded from these figures, and fsyncing it would
+make the runtime dominated by a variable this study is not about.

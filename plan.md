@@ -827,15 +827,15 @@ Build this once and build it well, because compaction reuses it verbatim in Phas
 
 ---
 
-### - [ ] T4.5 — Implement SCAN and the reference model test
+### - [x] T4.5 — Implement SCAN and the reference model test
 
-> **Built; one done-when clause unverified.** `LSM.Scan` pages on a key-based cursor over `MergeIterator` with tombstone suppression, and `test/model/` holds the reference engine, the weighted generator, the runner and a delta-debugging shrinker.
+> **Closed by Phase 6.** `LSM.Scan` pages on a key-based cursor over `MergeIterator` with tombstone suppression, and `test/model/` holds the reference engine, the weighted generator, the runner and a delta-debugging shrinker.
 >
 > A specification conflict was resolved here rather than papered over. §7.5 says the cursor "encodes the last key returned", but `Engine.Scan` took a `uint64`, which cannot hold a key, and T1.2 called that interface final. The interface changed, because a numeric offset names a position that a flush moves — `TestScanCursorSurvivesAFlush` flushes mid-iteration and asserts no key is skipped or repeated. The RESP layer keeps the numeric cursor Redis clients require by issuing per-connection tokens, so `make interop` and go-redis are unaffected.
 >
 > **Shrinking is proven** (`TestShrinkerFindsAMinimalSequence`, 2,002 ops → 2). **`TestModelManySeeds` is green**: 50 seeds × 1,000 operations, zero divergence, 18.7 s. It found three real bugs, each reported as a sequence under twenty operations — see commit 8110205.
 >
-> Unticked on "50,000 random operations produce zero divergence": that run has not yet been confirmed green. It is slow for a structural reason rather than an accidental one — Phase 4 has no compaction, so L0 grows without bound and a full scan reopens every table in it. Expect it to become cheap once T6.x lands; until then it runs with `LongRunWeights`, which makes SCAN rare so the sequence tests depth rather than quadratic rescanning.
+> **`TestModelFiftyThousandOperations` is now green**: 50,000 operations, zero divergence, 8.8 s. The prediction made here while it was unticked held exactly. Before Phase 6 the run exceeded a nine-minute timeout, for a structural reason rather than an accidental one — with no compaction, L0 grew without bound and every full scan reopened every table in it. Compaction bounds L0, and the same run now completes in under nine seconds, a speedup of at least 60×. Measured on the T6 branch at commit `09cdb11`, reproduced with `go test ./test/model -run TestModelFiftyThousandOperations -v`.
 
 **Effort:** 2–3 h · **Model:** Sonnet 5 for the test harness; write SCAN yourself
 
@@ -931,7 +931,7 @@ Write it up in `docs/benchmarks.md` with charts. This section is disproportionat
 - **L1 and below** hold tables with strictly non-overlapping ranges, each level targeting ~10× the bytes of the one above.
 - Compaction picks a file from level *i*, finds all overlapping files in level *i+1*, merges them, and writes output into level *i+1*.
 
-### - [ ] T6.1 — Implement the compaction picker
+### - [x] T6.1 — Implement the compaction picker
 
 **Effort:** 5–7 h · **Model:** Opus 5 to reason through the policy; write the code yourself
 
@@ -945,7 +945,7 @@ The picker is pure policy with no correctness burden, which makes it the ideal p
 
 ---
 
-### - [ ] T6.2 — Implement the compaction executor
+### - [x] T6.2 — Implement the compaction executor
 
 **Effort:** 7–9 h · **Model:** write it yourself; Fable 5 to attack the tombstone logic
 
@@ -959,7 +959,7 @@ The hard part, and the part most likely to hide a bug, is tombstone dropping. A 
 
 ---
 
-### - [ ] T6.3 — Implement atomic version installation
+### - [x] T6.3 — Implement atomic version installation
 
 **Effort:** 4–5 h · **Model:** Fable 5 — the crash-safety crux of the entire system
 
@@ -973,7 +973,7 @@ The manifest fsync is the commit point and the system has exactly two valid stat
 
 ---
 
-### - [ ] T6.4 — Implement scheduling, backpressure, and write stalls
+### - [x] T6.4 — Implement scheduling, backpressure, and write stalls
 
 **Effort:** 4–5 h · **Model:** Opus 5
 
@@ -987,7 +987,7 @@ Deliberate stalling is counterintuitive and worth understanding well: it is bett
 
 ---
 
-### - [ ] T6.5 — Implement continuous invariant verification
+### - [x] T6.5 — Implement continuous invariant verification
 
 **Effort:** 3–4 h · **Model:** Sonnet 5 for the checker, Fable 5 to help enumerate invariants
 
@@ -1001,7 +1001,7 @@ Run it after every compaction in test builds. This converts compaction bugs from
 
 ---
 
-### - [ ] T6.6 — Measure and characterise amplification
+### - [x] T6.6 — Measure and characterise amplification
 
 **Effort:** 3–4 h · **Model:** Opus 5 for analysis
 

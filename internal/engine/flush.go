@@ -86,9 +86,15 @@ type Flusher struct {
 	// Start; nil is usable.
 	blocks *cache.Cache
 
-	mu      sync.Mutex
-	err     error
-	flushed uint64
+	// onFlush, when non-nil, is called after each committed flush. It is how
+	// the compactor learns that L0 grew: a flush is the only thing that adds
+	// to L0, so it is the only event that can put L0 over its trigger.
+	onFlush func()
+
+	mu           sync.Mutex
+	err          error
+	flushed      uint64
+	bytesWritten uint64
 }
 
 // NewFlusher wires a flusher to a memtable set, a manifest log, and the
@@ -108,6 +114,12 @@ func NewFlusher(set *memtableSet, dir string, log *manifest.Log, vs *manifest.Ve
 // version install have their blocks evicted. It must be called before Start.
 func (f *Flusher) SetBlockCache(c *cache.Cache) {
 	f.blocks = c
+}
+
+// SetOnFlush registers a callback invoked after each committed flush, which
+// the engine uses to trigger compaction. It must be called before Start.
+func (f *Flusher) SetOnFlush(fn func()) {
+	f.onFlush = fn
 }
 
 // SetTableOptions selects the build parameters for the tables this flusher
@@ -154,6 +166,15 @@ func (f *Flusher) Flushed() uint64 {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	return f.flushed
+}
+
+// BytesWritten reports the total size of the tables committed by flushes. It
+// is one of the two terms in write amplification, kept apart from
+// compaction's because the two answer different questions.
+func (f *Flusher) BytesWritten() uint64 {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return f.bytesWritten
 }
 
 func (f *Flusher) run() {
@@ -281,11 +302,11 @@ func (f *Flusher) FlushOldest() (empty bool, err error) {
 	// which is the failure mode the whole comparator exists to prevent.
 	edit.SetLastSequence(info.LargestSeq)
 
-	if err := f.log.Append(&edit); err != nil {
-		return false, err
-	}
-	if _, err := f.vs.Apply(&edit); err != nil {
-		return false, fmt.Errorf("flush: install version: %w", err)
+	// Commit, not Append then Apply: the compactor appends to the same
+	// manifest, and the two halves have to be one atomic step or the two
+	// committers can order the file differently from memory.
+	if _, err := f.vs.Commit(f.log, &edit); err != nil {
+		return false, fmt.Errorf("flush: commit sstable %d: %w", number, err)
 	}
 
 	// The install may have retired files, and a retired file's blocks are
@@ -312,7 +333,15 @@ func (f *Flusher) FlushOldest() (empty bool, err error) {
 
 	f.mu.Lock()
 	f.flushed++
+	f.bytesWritten += uint64(info.Size)
 	f.mu.Unlock()
+
+	// L0 just grew, which is the only way it can. Tell the compactor after
+	// the commit rather than before: triggering on a table that has not been
+	// committed would have it pick a version that does not name the file.
+	if f.onFlush != nil {
+		f.onFlush()
+	}
 
 	return false, f.step(StepAfterWALDelete)
 }

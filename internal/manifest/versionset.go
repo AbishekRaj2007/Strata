@@ -41,9 +41,46 @@ type VersionSet struct {
 	// deleted from disk.
 	obsolete []uint64
 
+	// commitMu serialises whole commits -- the manifest append and the
+	// version install together -- and is held across the fsync.
+	//
+	// It is separate from mu on purpose. Two goroutines append to the
+	// manifest once compaction exists: the flusher committing a new L0
+	// table, and the compactor committing a merge. Holding only mu would
+	// leave two ways for that to go wrong. The records could interleave in
+	// the file, since the framing writer is not itself synchronised. And
+	// even with atomic appends, two committers could append in one order and
+	// install in the other, leaving the version a replay rebuilds different
+	// from the one in memory.
+	//
+	// It must not be mu, because mu is what Acquire takes. Holding mu across
+	// an fsync would block every reader for the duration of a disk write.
+	commitMu sync.Mutex
+
 	// nextFile is the allocator behind docs/format.md §1's single monotonic
 	// file-number sequence, shared across .wal, .sst and MANIFEST files.
 	nextFile atomic.Uint64
+}
+
+// Commit appends an edit to the manifest, fsyncs it, and installs the version
+// it produces.
+//
+// This is the only way an edit should reach a manifest that more than one
+// goroutine writes to. The two halves are one atomic step: the append is the
+// commit point, and the install is what makes the commit visible, so a
+// caller that did them separately could be interrupted between them by
+// another committer and leave the durable order disagreeing with the
+// in-memory one.
+//
+// The returned version is the new current one.
+func (vs *VersionSet) Commit(log *Log, e *VersionEdit) (*Version, error) {
+	vs.commitMu.Lock()
+	defer vs.commitMu.Unlock()
+
+	if err := log.Append(e); err != nil {
+		return nil, err
+	}
+	return vs.Apply(e)
 }
 
 // NewVersionSet returns a set holding the empty version.

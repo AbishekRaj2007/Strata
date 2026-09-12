@@ -9,8 +9,11 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"sync/atomic"
 
 	"github.com/AbishekRaj2007/Strata/internal/cache"
+	"github.com/AbishekRaj2007/Strata/internal/compaction"
+	"github.com/AbishekRaj2007/Strata/internal/log"
 	"github.com/AbishekRaj2007/Strata/internal/manifest"
 	"github.com/AbishekRaj2007/Strata/internal/memtable"
 	"github.com/AbishekRaj2007/Strata/internal/sstable"
@@ -45,6 +48,15 @@ type Options struct {
 	// BlockSize is the target SSTable data block size. Zero selects the
 	// docs/format.md §3.2 default.
 	BlockSize int
+
+	// Compaction shapes the tree and the backpressure thresholds. The zero
+	// value is the default geometry; T6.6's amplification sweep is the
+	// reason the multiplier is a parameter rather than a constant.
+	Compaction compaction.Options
+
+	// Logger receives one line per committed compaction at debug level.
+	// Nil selects a discarding logger.
+	Logger log.Logger
 }
 
 // LSM is the durable storage engine: memtables in front of a WAL, flushed
@@ -56,13 +68,30 @@ type Options struct {
 // lookup owns the read order. What this type adds is startup: deciding what
 // on disk is still true after a crash.
 type LSM struct {
-	dir     string
-	vs      *manifest.VersionSet
-	log     *manifest.Log
-	set     *memtableSet
-	flusher *Flusher
-	tables  tableReader
-	cache   *cache.Cache
+	dir       string
+	vs        *manifest.VersionSet
+	log       *manifest.Log
+	set       *memtableSet
+	flusher   *Flusher
+	compactor *compaction.Scheduler
+
+	// compactionOpts is kept so Stats can report each level's target
+	// alongside its actual size.
+	compactionOpts compaction.Options
+
+	// userBytes and gets are the two denominators of the amplification
+	// figures: what the workload asked for, against what the disk did.
+	userBytes atomic.Uint64
+	gets      atomic.Uint64
+
+	// logicalLive is the last measurement of live logical bytes, taken by
+	// Compact over a settled tree. measured guards it against being read as
+	// a real zero.
+	amplMu      sync.Mutex
+	logicalLive uint64
+	measured    bool
+	tables      tableReader
+	cache       *cache.Cache
 
 	policy wal.SyncPolicy
 
@@ -169,12 +198,42 @@ func Open(opts Options) (*LSM, error) {
 		policy:  opts.SyncPolicy,
 		flusher: nil,
 	}
-	e.flusher = NewFlusher(set, opts.Dir, log, vs)
-	e.flusher.SetBlockCache(blocks)
-	e.flusher.SetTableOptions(sstable.WriterOptions{
+	tableOpts := sstable.WriterOptions{
 		BitsPerKey: opts.BitsPerKey,
 		BlockSize:  opts.BlockSize,
+	}
+
+	e.flusher = NewFlusher(set, opts.Dir, log, vs)
+	e.flusher.SetBlockCache(blocks)
+	e.flusher.SetTableOptions(tableOpts)
+
+	// Compaction shares the flusher's table parameters, so a file's read
+	// cost does not depend on which of them produced it, and the same block
+	// cache, so an input it reads is served from blocks a reader may already
+	// have paid for.
+	e.compactor = compaction.NewScheduler(compaction.SchedulerConfig{
+		Versions: vs,
+		Picker:   compaction.NewPicker(opts.Compaction),
+		Executor: &compaction.Executor{
+			Dir:            opts.Dir,
+			Opts:           opts.Compaction,
+			TableOpts:      tableOpts,
+			Cache:          blocks,
+			NextFileNumber: vs.NextFileNumber,
+		},
+		Committer: &compaction.Committer{
+			Dir:      opts.Dir,
+			Log:      log,
+			Versions: vs,
+			Cache:    blocks,
+		},
+		Logger: opts.Logger,
 	})
+	e.compactionOpts = opts.Compaction
+
+	// A flush is the only thing that adds to L0, so it is the only event
+	// that can put L0 over its trigger.
+	e.flusher.SetOnFlush(e.compactor.Trigger)
 
 	// The replayed state is loaded through the normal write path so it lands
 	// in the new WAL too. That costs one rewrite of the recovered data and
@@ -193,6 +252,7 @@ func Open(opts Options) (*LSM, error) {
 	}
 
 	e.flusher.Start()
+	e.compactor.Start()
 	return e, nil
 }
 
@@ -406,6 +466,14 @@ func (e *LSM) Put(key, value []byte) error {
 		return err
 	}
 
+	// Backpressure is applied before the write is accepted, never after.
+	// Slowing a writer that has already been acknowledged protects nothing.
+	if err := e.compactor.Throttle(); err != nil {
+		return err
+	}
+
+	e.userBytes.Add(uint64(len(key) + len(value)))
+
 	if _, _, err := e.set.Add(key, value, false); err != nil {
 		return err
 	}
@@ -418,6 +486,7 @@ func (e *LSM) Get(key []byte) ([]byte, error) {
 	if err := ValidateKey(key); err != nil {
 		return nil, err
 	}
+	e.gets.Add(1)
 	if err := e.checkOpen(); err != nil {
 		return nil, err
 	}
@@ -470,6 +539,15 @@ func (e *LSM) Delete(key []byte) (bool, error) {
 		return false, err
 	}
 
+	if err := e.compactor.Throttle(); err != nil {
+		return false, err
+	}
+
+	// A delete writes a key and no value, and costs the disk a record all
+	// the same. Counting it keeps write amplification honest for a
+	// delete-heavy workload.
+	e.userBytes.Add(uint64(len(key)))
+
 	if _, _, err := e.set.Add(key, nil, true); err != nil {
 		return false, err
 	}
@@ -484,15 +562,39 @@ func (e *LSM) Stats() (Stats, error) {
 	}
 
 	rotation := e.set.Stats()
+	cs := e.compactor.Stats()
+	ampl := e.Amplification()
 	st := Stats{
 		SyncPolicy: e.policy.String(),
 		Memtable:   &rotation,
+		Compaction: &cs,
+		Levels:     levelStats(e.vs.Current(), e.compactionOpts),
+		Ampl:       &ampl,
 	}
 	if e.cache != nil {
 		cs := e.cache.Stats()
 		st.BlockCache = &cs
 	}
 	return st, nil
+}
+
+// levelStats summarises the tree's shape. Levels with no files are omitted:
+// an LSM is sparse by design, and printing four empty levels buries the two
+// that hold data.
+func levelStats(v *manifest.Version, opts compaction.Options) []LevelStats {
+	var out []LevelStats
+	for level := 0; level < manifest.NumLevels; level++ {
+		if v.NumFiles(level) == 0 {
+			continue
+		}
+		out = append(out, LevelStats{
+			Level:       level,
+			Files:       v.NumFiles(level),
+			Bytes:       v.LevelBytes(level),
+			TargetBytes: opts.TargetBytes(level),
+		})
+	}
+	return out
 }
 
 // Close stops the flusher, flushes what is queued, and releases everything.
@@ -509,6 +611,14 @@ func (e *LSM) Close() error {
 	// Stop drains the queue before returning, so a clean shutdown leaves
 	// tables behind rather than WALs to replay.
 	firstErr := e.flusher.Stop()
+
+	// The compactor stops second, so the tables that final drain produced
+	// are still eligible for compaction while it runs. It cancels a merge in
+	// flight rather than waiting it out; nothing was committed, so the tree
+	// is left exactly as the last commit left it.
+	if err := e.compactor.Stop(); err != nil && !errors.Is(err, compaction.ErrCanceled) && firstErr == nil {
+		firstErr = err
+	}
 
 	if err := e.set.Close(); err != nil && firstErr == nil {
 		firstErr = err
@@ -644,5 +754,76 @@ func (e *LSM) Flush() error {
 	if err := e.set.rotate(); err != nil {
 		return err
 	}
-	return e.flusher.DrainQueue()
+	if err := e.flusher.DrainQueue(); err != nil {
+		return err
+	}
+
+	// Draining compaction too is what makes FLUSH mean "the tree is
+	// settled" rather than "the memtable is on disk". T6.6 depends on it:
+	// space amplification measured before compaction has quiesced measures
+	// the backlog, not the steady state.
+	return e.compactor.Drain()
+}
+
+// measureLive records the live logical byte count of the settled tree, which
+// is the denominator of space amplification. It must be called only after a
+// drain.
+func (e *LSM) measureLive() error {
+	logical, err := measureLogicalBytes(e.dir, e.vs.Current())
+	if err != nil {
+		return err
+	}
+
+	e.amplMu.Lock()
+	e.logicalLive, e.measured = logical, true
+	e.amplMu.Unlock()
+	return nil
+}
+
+// Amplification reports the three costs the leveled layout trades against
+// each other. The space figure is from the last Compact; the other two are
+// cumulative and always current.
+func (e *LSM) Amplification() Amplification {
+	cs := e.compactor.Stats()
+
+	e.amplMu.Lock()
+	logical, measured := e.logicalLive, e.measured
+	e.amplMu.Unlock()
+
+	return Amplification{
+		UserBytesWritten:       e.userBytes.Load(),
+		FlushBytesWritten:      e.flusher.BytesWritten(),
+		CompactionBytesWritten: cs.BytesWritten,
+		Gets:                   e.gets.Load(),
+		TableReads:             e.tables.Reads(),
+		DiskBytesLive:          diskBytes(e.vs.Current()),
+		LogicalBytesLive:       logical,
+		LogicalMeasured:        measured,
+	}
+}
+
+// diskBytes is the total size of every table the version names.
+func diskBytes(v *manifest.Version) uint64 {
+	var total uint64
+	for level := 0; level < manifest.NumLevels; level++ {
+		total += v.LevelBytes(level)
+	}
+	return total
+}
+
+// Compact forces the tree to settle: the memtable is flushed and every level
+// compacted until none is over budget.
+//
+// It is the same work as Flush, and deliberately so -- settling the tree
+// requires the memtable on disk first, since data still in memory is data
+// compaction cannot see. The two names exist because the callers mean
+// different things: FLUSHDB asks for durability at a known point, COMPACT
+// asks for a steady state to measure.
+func (e *LSM) Compact() error {
+	if err := e.Flush(); err != nil {
+		return err
+	}
+	// The tree is settled, which is the only point at which live logical
+	// bytes can be counted by a single top-down walk.
+	return e.measureLive()
 }

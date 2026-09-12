@@ -68,8 +68,6 @@ func TestUnimplementedCommandsReportCleanly(t *testing.T) {
 	}{
 		{"dump", []string{"dump", sst}},
 		{"manifest", []string{"manifest", manifest}},
-		{"levels", []string{"levels", dir}},
-		{"validate", []string{"validate", dir}},
 	}
 
 	for _, tt := range tests {

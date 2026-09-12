@@ -16,8 +16,12 @@ import (
 // 32 KiB blocks, the same 7-byte fragment header, the same CRC32C. Only the
 // payload differs, carrying an encoded [VersionEdit] rather than a batch.
 //
-// A Log is not safe for concurrent use. Serialising appends is the caller's
-// job, and [VersionSet] already serialises the installers that produce them.
+// A Log is not safe for concurrent use, and the framing writer beneath it
+// would interleave two callers' records in the file rather than merely racing.
+// Once more than one goroutine can commit -- the flusher and the compactor,
+// from Phase 6 -- every append must go through [VersionSet.Commit], which
+// serialises the append and the install together. Direct calls to Append are
+// for startup, before either goroutine exists.
 type Log struct {
 	f    *os.File
 	w    *wal.Writer

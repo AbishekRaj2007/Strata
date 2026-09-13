@@ -20,13 +20,26 @@ import (
 // about.
 type Reference struct {
 	data map[string]string
+
+	// sorted is the key set in order, rebuilt lazily after a mutation.
+	//
+	// Caching it is not an optimisation for its own sake: a full scan pages
+	// through the key set, and sorting every key on every page made the
+	// reference quadratic in the database size. At soak scale that cost
+	// dominated the engine it exists to check, which is the wrong thing for
+	// a harness to spend its time on.
+	sorted []string
+	dirty  bool
 }
 
 func NewReference() *Reference {
-	return &Reference{data: make(map[string]string)}
+	return &Reference{data: make(map[string]string), dirty: true}
 }
 
 func (r *Reference) Put(key, value []byte) error {
+	if _, existed := r.data[string(key)]; !existed {
+		r.dirty = true
+	}
 	r.data[string(key)] = string(value)
 	return nil
 }
@@ -41,8 +54,24 @@ func (r *Reference) Get(key []byte) ([]byte, error) {
 
 func (r *Reference) Delete(key []byte) (bool, error) {
 	_, existed := r.data[string(key)]
+	if existed {
+		r.dirty = true
+	}
 	delete(r.data, string(key))
 	return existed, nil
+}
+
+// keys returns the key set in order.
+func (r *Reference) keys() []string {
+	if r.dirty {
+		r.sorted = r.sorted[:0]
+		for k := range r.data {
+			r.sorted = append(r.sorted, k)
+		}
+		sort.Strings(r.sorted)
+		r.dirty = false
+	}
+	return r.sorted
 }
 
 // Scan mirrors the engine's contract: keys strictly after the cursor, in
@@ -52,11 +81,7 @@ func (r *Reference) Scan(cursor []byte, count int) (engine.ScanResult, error) {
 		count = 10
 	}
 
-	keys := make([]string, 0, len(r.data))
-	for k := range r.data {
-		keys = append(keys, k)
-	}
-	sort.Strings(keys)
+	keys := r.keys()
 
 	start := 0
 	if cursor != nil {
@@ -95,6 +120,7 @@ const (
 	OpDelete
 	OpScan
 	OpFlush
+	OpCompact
 	OpReopen
 )
 
@@ -110,6 +136,8 @@ func (k OpKind) String() string {
 		return "SCAN"
 	case OpFlush:
 		return "FLUSH"
+	case OpCompact:
+		return "COMPACT"
 	case OpReopen:
 		return "REOPEN"
 	}
@@ -173,6 +201,10 @@ type System interface {
 	// Flush forces the active memtable to an SSTable.
 	Flush() error
 
+	// Compact settles the whole tree, so that a sequence can put a
+	// compaction at a chosen point rather than wait for one.
+	Compact() error
+
 	// Reopen closes and reopens the engine, so recovery is exercised inside
 	// the operation sequence rather than only at the end.
 	Reopen() error
@@ -181,11 +213,11 @@ type System interface {
 // Run replays ops against both implementations and reports the first
 // divergence, or nil if they agreed throughout.
 //
-// Flush and Reopen have no reference equivalent by design: they must be
-// invisible. A durable engine that returns different answers after a flush or
-// a restart is exactly the failure this harness exists to catch, so the
-// reference simply ignores them and any resulting difference shows up as a
-// divergence on the next read.
+// Flush, Compact and Reopen have no reference equivalent by design: they must
+// be invisible. A durable engine that returns different answers after a
+// flush, a compaction or a restart is exactly the failure this harness exists
+// to catch, so the reference simply ignores them and any resulting difference
+// shows up as a divergence on the next read.
 func Run(sys System, ref *Reference, ops []Op) error {
 	for i, op := range ops {
 		switch op.Kind {
@@ -239,6 +271,11 @@ func Run(sys System, ref *Reference, ops []Op) error {
 
 		case OpFlush:
 			if err := sys.Flush(); err != nil {
+				return Divergence{Index: i, Op: op, Want: "no error", Got: err.Error()}
+			}
+
+		case OpCompact:
+			if err := sys.Compact(); err != nil {
 				return Divergence{Index: i, Op: op, Want: "no error", Got: err.Error()}
 			}
 

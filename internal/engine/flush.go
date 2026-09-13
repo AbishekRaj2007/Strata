@@ -10,6 +10,7 @@ import (
 	"github.com/AbishekRaj2007/Strata/internal/cache"
 	"github.com/AbishekRaj2007/Strata/internal/manifest"
 	"github.com/AbishekRaj2007/Strata/internal/sstable"
+	"github.com/AbishekRaj2007/Strata/internal/vfs"
 )
 
 // flushStep names a point in the flush sequence, for the fault injection hook
@@ -57,6 +58,7 @@ var ErrFlushAborted = errors.New("flush aborted by fault injection")
 type Flusher struct {
 	set *memtableSet
 	dir string
+	fs  vfs.FS
 	log *manifest.Log
 	vs  *manifest.VersionSet
 
@@ -103,6 +105,7 @@ func NewFlusher(set *memtableSet, dir string, log *manifest.Log, vs *manifest.Ve
 	return &Flusher{
 		set:     set,
 		dir:     dir,
+		fs:      vfs.Or(set.cfg.FS),
 		log:     log,
 		vs:      vs,
 		trigger: make(chan struct{}, 1),
@@ -223,7 +226,7 @@ func (f *Flusher) DrainQueue() error {
 // throughput, and start evicting live data to hold data no reader can ever
 // want.
 func (f *Flusher) dropObsolete() error {
-	deleted, err := f.vs.DeleteObsolete(f.dir)
+	deleted, err := f.vs.DeleteObsolete(f.fs, f.dir)
 	for _, number := range deleted {
 		f.blocks.EvictFile(number)
 	}
@@ -265,7 +268,7 @@ func (f *Flusher) FlushOldest() (empty bool, err error) {
 	// point recording. Drop the file and retire the slot; the WAL it came
 	// with protects nothing.
 	if info.EntryCount == 0 {
-		if err := os.Remove(info.Path); err != nil {
+		if err := f.fs.Remove(info.Path); err != nil {
 			return false, fmt.Errorf("flush: remove empty sstable %d: %w", number, err)
 		}
 		return false, f.retire(sl)
@@ -355,10 +358,10 @@ func (f *Flusher) retire(sl *slot) error {
 	}
 
 	path := filepath.Join(f.dir, fmt.Sprintf("%06d.wal", sl.number))
-	if err := os.Remove(path); err != nil && !errors.Is(err, os.ErrNotExist) {
+	if err := f.fs.Remove(path); err != nil && !errors.Is(err, os.ErrNotExist) {
 		return fmt.Errorf("flush: remove wal %d: %w", sl.number, err)
 	}
-	if err := syncDir(f.dir); err != nil {
+	if err := syncDir(f.fs, f.dir); err != nil {
 		return err
 	}
 	return nil

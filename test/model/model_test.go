@@ -29,12 +29,19 @@ func newLSMSystem(t *testing.T, dir string, threshold int) *lsmSystem {
 		t.Fatalf("Open: %v", err)
 	}
 	s := &lsmSystem{dir: dir, opts: opts, e: e}
-	t.Cleanup(func() {
-		if s.e != nil {
-			_ = s.e.Close()
-		}
-	})
+	t.Cleanup(s.close)
 	return s
+}
+
+// close releases the engine early. The shrinker builds one system per
+// candidate sequence and there are thousands of candidates, so waiting for
+// t.Cleanup would hold every engine -- and every file descriptor under it --
+// open until the test ended.
+func (s *lsmSystem) close() {
+	if s.e != nil {
+		_ = s.e.Close()
+		s.e = nil
+	}
 }
 
 func (s *lsmSystem) Put(k, v []byte) error         { return s.e.Put(k, v) }
@@ -45,7 +52,8 @@ func (s *lsmSystem) Scan(cursor []byte, count int) (engine.ScanResult, error) {
 	return s.e.Scan(cursor, count)
 }
 
-func (s *lsmSystem) Flush() error { return s.e.Flush() }
+func (s *lsmSystem) Flush() error   { return s.e.Flush() }
+func (s *lsmSystem) Compact() error { return s.e.Compact() }
 
 func (s *lsmSystem) Reopen() error {
 	if err := s.e.Close(); err != nil {

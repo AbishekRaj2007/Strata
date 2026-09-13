@@ -323,7 +323,7 @@ func tableNumber(name string) (uint64, bool) {
 // what a restart would actually see rather than what a running process
 // believes.
 func CheckDir(dir string) (*Report, error) {
-	vs, err := manifest.Recover(dir)
+	vs, err := manifest.Recover(nil, dir)
 	if err != nil {
 		return nil, fmt.Errorf("compaction: recover %s: %w", dir, err)
 	}

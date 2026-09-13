@@ -4,10 +4,11 @@ import (
 	"errors"
 	"fmt"
 	"io/fs"
-	"os"
 	"path/filepath"
 	"strconv"
 	"strings"
+
+	"github.com/AbishekRaj2007/Strata/internal/vfs"
 )
 
 // DeleteObsolete removes every file that has reached zero references, and
@@ -22,7 +23,8 @@ import (
 // state elsewhere in the process -- its blocks in the read cache -- and the
 // caller cannot drop that without knowing which files went. A count would
 // force the caller to guess.
-func (vs *VersionSet) DeleteObsolete(dir string) ([]uint64, error) {
+func (vs *VersionSet) DeleteObsolete(fsys vfs.FS, dir string) ([]uint64, error) {
+	fsys = vfs.Or(fsys)
 	numbers := vs.Obsolete()
 	if len(numbers) == 0 {
 		return nil, nil
@@ -31,7 +33,7 @@ func (vs *VersionSet) DeleteObsolete(dir string) ([]uint64, error) {
 	var deleted []uint64
 	for _, number := range numbers {
 		path := filepath.Join(dir, fmt.Sprintf("%06d.sst", number))
-		if err := os.Remove(path); err != nil {
+		if err := fsys.Remove(path); err != nil {
 			if errors.Is(err, fs.ErrNotExist) {
 				continue
 			}
@@ -44,7 +46,7 @@ func (vs *VersionSet) DeleteObsolete(dir string) ([]uint64, error) {
 	// Reporting success before that would let a caller record the files as
 	// gone when a crash could still bring them back.
 	if len(deleted) > 0 {
-		if err := SyncDir(dir); err != nil {
+		if err := SyncDir(fsys, dir); err != nil {
 			return deleted, err
 		}
 	}
@@ -64,7 +66,8 @@ func (vs *VersionSet) DeleteObsolete(dir string) ([]uint64, error) {
 // It must run only at startup, before any compaction is in flight. Mid-run, a
 // compaction's output exists on disk for a while before the edit naming it is
 // committed, and sweeping then would delete the file out from under it.
-func SweepOrphans(dir string, v *Version) (int, error) {
+func SweepOrphans(fsys vfs.FS, dir string, v *Version) (int, error) {
+	fsys = vfs.Or(fsys)
 	live := make(map[uint64]bool, v.TotalFiles())
 	for level := 0; level < NumLevels; level++ {
 		for _, f := range v.Files(level) {
@@ -72,7 +75,7 @@ func SweepOrphans(dir string, v *Version) (int, error) {
 		}
 	}
 
-	entries, err := os.ReadDir(dir)
+	entries, err := fsys.ReadDir(dir)
 	if err != nil {
 		return 0, fmt.Errorf("manifest: read dir %s: %w", dir, err)
 	}
@@ -86,7 +89,7 @@ func SweepOrphans(dir string, v *Version) (int, error) {
 		if !ok || live[number] {
 			continue
 		}
-		if err := os.Remove(filepath.Join(dir, entry.Name())); err != nil {
+		if err := fsys.Remove(filepath.Join(dir, entry.Name())); err != nil {
 			if errors.Is(err, fs.ErrNotExist) {
 				continue
 			}
@@ -96,7 +99,7 @@ func SweepOrphans(dir string, v *Version) (int, error) {
 	}
 
 	if removed > 0 {
-		if err := SyncDir(dir); err != nil {
+		if err := SyncDir(fsys, dir); err != nil {
 			return removed, err
 		}
 	}

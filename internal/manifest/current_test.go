@@ -30,11 +30,11 @@ func TestWriteAndReadCurrent(t *testing.T) {
 	name := ManifestName(4)
 	writeManifestStub(t, dir, name)
 
-	if err := WriteCurrent(dir, name); err != nil {
+	if err := WriteCurrent(nil, dir, name); err != nil {
 		t.Fatalf("WriteCurrent: %v", err)
 	}
 
-	got, err := ReadCurrent(dir)
+	got, err := ReadCurrent(nil, dir)
 	if err != nil {
 		t.Fatalf("ReadCurrent: %v", err)
 	}
@@ -60,7 +60,7 @@ func TestWriteCurrentLeavesNoTemporary(t *testing.T) {
 	name := ManifestName(1)
 	writeManifestStub(t, dir, name)
 
-	if err := WriteCurrent(dir, name); err != nil {
+	if err := WriteCurrent(nil, dir, name); err != nil {
 		t.Fatalf("WriteCurrent: %v", err)
 	}
 	if _, err := os.Stat(filepath.Join(dir, CurrentFile+".tmp")); !os.IsNotExist(err) {
@@ -76,14 +76,14 @@ func TestWriteCurrentReplacesAtomically(t *testing.T) {
 	writeManifestStub(t, dir, first)
 	writeManifestStub(t, dir, second)
 
-	if err := WriteCurrent(dir, first); err != nil {
+	if err := WriteCurrent(nil, dir, first); err != nil {
 		t.Fatalf("first WriteCurrent: %v", err)
 	}
-	if err := WriteCurrent(dir, second); err != nil {
+	if err := WriteCurrent(nil, dir, second); err != nil {
 		t.Fatalf("second WriteCurrent: %v", err)
 	}
 
-	got, err := ReadCurrent(dir)
+	got, err := ReadCurrent(nil, dir)
 	if err != nil {
 		t.Fatalf("ReadCurrent: %v", err)
 	}
@@ -116,7 +116,7 @@ func TestReadCurrentRejectsCorruption(t *testing.T) {
 				t.Fatalf("write CURRENT: %v", err)
 			}
 
-			if _, err := ReadCurrent(dir); !errors.Is(err, ErrCorrupt) {
+			if _, err := ReadCurrent(nil, dir); !errors.Is(err, ErrCorrupt) {
 				t.Errorf("ReadCurrent = %v, want an ErrCorrupt", err)
 			}
 		})
@@ -127,7 +127,7 @@ func TestReadCurrentMissingFile(t *testing.T) {
 	// An absent CURRENT is not corruption: it is a directory that has never
 	// been opened as a database, which the caller distinguishes with
 	// os.IsNotExist to decide whether to initialise one.
-	_, err := ReadCurrent(t.TempDir())
+	_, err := ReadCurrent(nil, t.TempDir())
 	if err == nil {
 		t.Fatal("ReadCurrent on an empty directory = nil, want an error")
 	}
@@ -140,7 +140,7 @@ func TestReadCurrentMissingFile(t *testing.T) {
 }
 
 func TestSyncDirRejectsMissingDirectory(t *testing.T) {
-	if err := SyncDir(filepath.Join(t.TempDir(), "nope")); err == nil {
+	if err := SyncDir(nil, filepath.Join(t.TempDir(), "nope")); err == nil {
 		t.Error("SyncDir on a missing directory = nil, want an error")
 	}
 }

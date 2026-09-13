@@ -4,10 +4,10 @@ import (
 	"errors"
 	"fmt"
 	"io/fs"
-	"os"
 	"path/filepath"
 
 	"github.com/AbishekRaj2007/Strata/internal/memtable"
+	"github.com/AbishekRaj2007/Strata/internal/vfs"
 )
 
 // Size is how many bytes the table would occupy if it were finished now,
@@ -32,7 +32,8 @@ func (w *Writer) EntryCount() int { return w.entryCount }
 // needs the file's current size and the ability to finish it on demand.
 type FileWriter struct {
 	w      *Writer
-	f      *os.File
+	f      vfs.File
+	fsys   vfs.FS
 	dir    string
 	path   string
 	number uint64
@@ -44,14 +45,15 @@ type FileWriter struct {
 // the caller's allocator is wrong and silently truncating the existing file
 // would destroy live data.
 func Create(dir string, number uint64, opts WriterOptions) (*FileWriter, error) {
+	fsys := vfs.Or(opts.FS)
 	path := filepath.Join(dir, fmt.Sprintf("%06d.sst", number))
 
-	f, err := os.OpenFile(path, os.O_CREATE|os.O_EXCL|os.O_WRONLY, 0o600)
+	f, err := fsys.Create(path)
 	if err != nil {
 		return nil, fmt.Errorf("sstable: create %s: %w", path, err)
 	}
 
-	return &FileWriter{w: newWriter(f, opts), f: f, dir: dir, path: path, number: number}, nil
+	return &FileWriter{w: newWriter(f, opts), f: f, fsys: fsys, dir: dir, path: path, number: number}, nil
 }
 
 // Number is the file number the table is being written as.
@@ -88,7 +90,7 @@ func (fw *FileWriter) Finish() (Info, error) {
 	}
 	fw.done = true
 
-	if err := syncDir(fw.dir); err != nil {
+	if err := syncDir(fw.fsys, fw.dir); err != nil {
 		return Info{}, err
 	}
 
@@ -110,7 +112,7 @@ func (fw *FileWriter) Abort() error {
 	fw.done = true
 
 	_ = fw.f.Close()
-	if err := os.Remove(fw.path); err != nil && !errors.Is(err, fs.ErrNotExist) {
+	if err := fw.fsys.Remove(fw.path); err != nil && !errors.Is(err, fs.ErrNotExist) {
 		return fmt.Errorf("sstable: remove partial %s: %w", fw.path, err)
 	}
 	return nil

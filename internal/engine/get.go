@@ -9,6 +9,7 @@ import (
 	"github.com/AbishekRaj2007/Strata/internal/manifest"
 	"github.com/AbishekRaj2007/Strata/internal/memtable"
 	"github.com/AbishekRaj2007/Strata/internal/sstable"
+	"github.com/AbishekRaj2007/Strata/internal/vfs"
 )
 
 // tableReader resolves a file number to a point lookup in that SSTable.
@@ -33,6 +34,7 @@ type tableReader interface {
 type dirTables struct {
 	dir   string
 	cache *cache.Cache
+	fs    vfs.FS
 
 	// reads counts tables opened, the numerator of read amplification. It
 	// is here rather than in the read path because this is the one place a
@@ -48,7 +50,7 @@ func (d *dirTables) lookup(number uint64, key []byte) (memtable.Entry, bool, err
 
 	path := filepath.Join(d.dir, fmt.Sprintf("%06d.sst", number))
 
-	tbl, err := sstable.OpenWith(path, sstable.OpenOptions{Number: number, Cache: d.cache})
+	tbl, err := sstable.OpenWith(path, sstable.OpenOptions{Number: number, Cache: d.cache, FS: d.fs})
 	if err != nil {
 		return memtable.Entry{}, false, fmt.Errorf("get: open table %d: %w", number, err)
 	}

@@ -2,9 +2,10 @@ package manifest
 
 import (
 	"fmt"
-	"os"
 	"path/filepath"
 	"strings"
+
+	"github.com/AbishekRaj2007/Strata/internal/vfs"
 )
 
 // CurrentFile is the name of the file naming the active manifest.
@@ -24,7 +25,8 @@ func ManifestName(number uint64) string {
 // is not durable and a crash can leave CURRENT naming the previous manifest.
 // The rename in the middle is what makes the switch atomic: a reader sees the
 // old name or the new one, never a partially written file.
-func WriteCurrent(dir, manifestName string) error {
+func WriteCurrent(fsys vfs.FS, dir, manifestName string) error {
+	fsys = vfs.Or(fsys)
 	tmp := filepath.Join(dir, CurrentFile+".tmp")
 	final := filepath.Join(dir, CurrentFile)
 
@@ -32,7 +34,7 @@ func WriteCurrent(dir, manifestName string) error {
 	// else.
 	content := append([]byte(manifestName), '\n')
 
-	f, err := os.OpenFile(tmp, os.O_CREATE|os.O_TRUNC|os.O_WRONLY, 0o600)
+	f, err := fsys.CreateTruncate(tmp)
 	if err != nil {
 		return fmt.Errorf("manifest: create %s: %w", tmp, err)
 	}
@@ -49,11 +51,11 @@ func WriteCurrent(dir, manifestName string) error {
 		return fmt.Errorf("manifest: close %s: %w", tmp, err)
 	}
 
-	if err := os.Rename(tmp, final); err != nil {
+	if err := fsys.Rename(tmp, final); err != nil {
 		return fmt.Errorf("manifest: rename %s to %s: %w", tmp, final, err)
 	}
 
-	return SyncDir(dir)
+	return SyncDir(fsys, dir)
 }
 
 // ReadCurrent returns the manifest filename CURRENT names.
@@ -63,10 +65,11 @@ func WriteCurrent(dir, manifestName string) error {
 // recoverable state. Each of those means the atomic write did not complete,
 // and guessing past it would open the wrong manifest and reconstruct a version
 // that does not describe what is on disk.
-func ReadCurrent(dir string) (string, error) {
+func ReadCurrent(fsys vfs.FS, dir string) (string, error) {
+	fsys = vfs.Or(fsys)
 	path := filepath.Join(dir, CurrentFile)
 
-	data, err := os.ReadFile(path)
+	data, err := fsys.ReadFile(path)
 	if err != nil {
 		return "", fmt.Errorf("manifest: read %s: %w", path, err)
 	}
@@ -88,7 +91,7 @@ func ReadCurrent(dir string) (string, error) {
 		return "", fmt.Errorf("%w: %s holds more than one line", ErrCorrupt, CurrentFile)
 	}
 
-	if _, err := os.Stat(filepath.Join(dir, name)); err != nil {
+	if _, err := fsys.Stat(filepath.Join(dir, name)); err != nil {
 		return "", fmt.Errorf("%w: %s names %q, which does not exist", ErrCorrupt, CurrentFile, name)
 	}
 
@@ -98,14 +101,8 @@ func ReadCurrent(dir string) (string, error) {
 // SyncDir fsyncs a directory so that entries created or renamed within it are
 // durable. A file's creation is not durable until the directory entry naming
 // it is.
-func SyncDir(dir string) error {
-	d, err := os.Open(dir)
-	if err != nil {
-		return fmt.Errorf("manifest: open dir %s: %w", dir, err)
-	}
-	defer d.Close()
-
-	if err := d.Sync(); err != nil {
+func SyncDir(fsys vfs.FS, dir string) error {
+	if err := vfs.SyncDir(fsys, dir); err != nil {
 		return fmt.Errorf("manifest: fsync dir %s: %w", dir, err)
 	}
 	return nil

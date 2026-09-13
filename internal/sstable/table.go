@@ -6,13 +6,14 @@ import (
 	"errors"
 	"fmt"
 	"hash/crc32"
-	"os"
+
 	"sort"
 	"sync/atomic"
 
 	"github.com/AbishekRaj2007/Strata/internal/bloom"
 	"github.com/AbishekRaj2007/Strata/internal/cache"
 	"github.com/AbishekRaj2007/Strata/internal/memtable"
+	"github.com/AbishekRaj2007/Strata/internal/vfs"
 )
 
 const (
@@ -166,11 +167,16 @@ func decodeIndex(b []byte) ([]indexEntry, error) {
 	return entries, nil
 }
 
-// WriterOptions tunes how a table is built. Both fields have defaults, and
-// both are swept by T5.3's tuning study -- which is why they are parameters
-// here rather than constants: a study that cannot vary the parameter it is
-// studying is a benchmark, not a study.
+// WriterOptions tunes how a table is built. BitsPerKey and BlockSize have
+// defaults, and both are swept by T5.3's tuning study -- which is why they are
+// parameters here rather than constants: a study that cannot vary the
+// parameter it is studying is a benchmark, not a study.
 type WriterOptions struct {
+	// FS is the filesystem to write through. Nil is the real one; a test
+	// substitutes an injector to fail the writes and fsyncs underneath a
+	// table build (T7.2).
+	FS vfs.FS
+
 	// BitsPerKey sizes the bloom filter. Zero selects
 	// bloom.DefaultBitsPerKey.
 	BitsPerKey int
@@ -194,7 +200,7 @@ func (o WriterOptions) withDefaults() WriterOptions {
 // offsets as it goes -- never patching the footer after the fact, since the
 // final size of a preceding section is not known until it is written.
 type Writer struct {
-	f      *os.File
+	f      vfs.File
 	opts   WriterOptions
 	offset int64
 
@@ -209,7 +215,7 @@ type Writer struct {
 	largestSeq   uint64
 }
 
-func newWriter(f *os.File, opts WriterOptions) *Writer {
+func newWriter(f vfs.File, opts WriterOptions) *Writer {
 	opts = opts.withDefaults()
 	return &Writer{
 		f:      f,
@@ -359,14 +365,8 @@ func WriteTableOpts(dir string, number uint64, it memtable.Iterator, opts Writer
 	return w.Finish()
 }
 
-func syncDir(dir string) error {
-	d, err := os.Open(dir)
-	if err != nil {
-		return fmt.Errorf("sstable: open dir %s: %w", dir, err)
-	}
-	defer func() { _ = d.Close() }()
-
-	if err := d.Sync(); err != nil {
+func syncDir(fsys vfs.FS, dir string) error {
+	if err := vfs.SyncDir(fsys, dir); err != nil {
 		return fmt.Errorf("sstable: fsync dir %s: %w", dir, err)
 	}
 	return nil
@@ -387,10 +387,14 @@ type OpenOptions struct {
 
 	// Cache is the shared block cache, or nil for no caching.
 	Cache *cache.Cache
+
+	// FS is the filesystem to read through. Nil is the real one. A table
+	// opened through an injector is how a read-path fault is delivered.
+	FS vfs.FS
 }
 
 type Table struct {
-	f      *os.File
+	f      vfs.File
 	number uint64
 	cache  *cache.Cache
 	index  []indexEntry
@@ -421,7 +425,7 @@ func Open(path string) (*Table, error) {
 // OpenWith is Open with the block cache attached. A zero OpenOptions is
 // exactly Open.
 func OpenWith(path string, opts OpenOptions) (*Table, error) {
-	f, err := os.Open(path)
+	f, err := vfs.Or(opts.FS).Open(path)
 	if err != nil {
 		return nil, fmt.Errorf("sstable: open %s: %w", path, err)
 	}

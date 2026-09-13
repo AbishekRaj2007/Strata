@@ -6,11 +6,12 @@ import (
 	"fmt"
 	"hash/crc32"
 	"io"
-	"os"
 	"path/filepath"
 	"sort"
 	"strconv"
 	"strings"
+
+	"github.com/AbishekRaj2007/Strata/internal/vfs"
 )
 
 // BlockSize is the fixed physical block a WAL file is packed into (§2.1). The
@@ -45,7 +46,7 @@ type Reader struct {
 }
 
 // NewReader prepares f for replay from its current position.
-func NewReader(f *os.File) *Reader {
+func NewReader(f io.Reader) *Reader {
 	data, err := io.ReadAll(f)
 	return &Reader{data: data, readErr: err}
 }
@@ -284,8 +285,9 @@ func allZero(b []byte) bool {
 // that was open when the process died. An earlier file ending mid-record is
 // corruption regardless of shape (§2.3): a later file only exists because the
 // earlier one was completed and rotated away from.
-func Recover(dir string, apply func(seq uint64, rec Record) error) (uint64, error) {
-	files, err := walFiles(dir)
+func Recover(fsys vfs.FS, dir string, apply func(seq uint64, rec Record) error) (uint64, error) {
+	fsys = vfs.Or(fsys)
+	files, err := walFiles(fsys, dir)
 	if err != nil {
 		return 0, err
 	}
@@ -294,7 +296,7 @@ func Recover(dir string, apply func(seq uint64, rec Record) error) (uint64, erro
 	for i, wf := range files {
 		isNewest := i == len(files)-1
 
-		h, err := recoverFile(wf.path, isNewest, apply)
+		h, err := recoverFile(fsys, wf.path, isNewest, apply)
 		if err != nil {
 			return highest, err
 		}
@@ -305,8 +307,8 @@ func Recover(dir string, apply func(seq uint64, rec Record) error) (uint64, erro
 	return highest, nil
 }
 
-func recoverFile(path string, isNewest bool, apply func(seq uint64, rec Record) error) (uint64, error) {
-	f, err := os.Open(path)
+func recoverFile(fsys vfs.FS, path string, isNewest bool, apply func(seq uint64, rec Record) error) (uint64, error) {
+	f, err := fsys.Open(path)
 	if err != nil {
 		return 0, fmt.Errorf("wal: open %s: %w", path, err)
 	}
@@ -348,8 +350,8 @@ type walFile struct {
 // by parsed number rather than directory or mtime order matters: nothing
 // guarantees readdir returns names in numeric order once file numbers exceed
 // a single digit width.
-func walFiles(dir string) ([]walFile, error) {
-	entries, err := os.ReadDir(dir)
+func walFiles(fsys vfs.FS, dir string) ([]walFile, error) {
+	entries, err := vfs.Or(fsys).ReadDir(dir)
 	if err != nil {
 		return nil, fmt.Errorf("wal: read dir %s: %w", dir, err)
 	}

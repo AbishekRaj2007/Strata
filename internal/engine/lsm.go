@@ -17,6 +17,7 @@ import (
 	"github.com/AbishekRaj2007/Strata/internal/manifest"
 	"github.com/AbishekRaj2007/Strata/internal/memtable"
 	"github.com/AbishekRaj2007/Strata/internal/sstable"
+	"github.com/AbishekRaj2007/Strata/internal/vfs"
 	"github.com/AbishekRaj2007/Strata/internal/wal"
 )
 
@@ -57,6 +58,12 @@ type Options struct {
 	// Logger receives one line per committed compaction at debug level.
 	// Nil selects a discarding logger.
 	Logger log.Logger
+
+	// FS is the filesystem every durable operation goes through. Nil is the
+	// real one. It is an option rather than a global so that T7.2's sweep
+	// can fail one engine's I/O without touching another's, which is what
+	// lets the sweep run its cases in the same process.
+	FS vfs.FS
 }
 
 // LSM is the durable storage engine: memtables in front of a WAL, flushed
@@ -69,6 +76,7 @@ type Options struct {
 // on disk is still true after a crash.
 type LSM struct {
 	dir       string
+	fs        vfs.FS
 	vs        *manifest.VersionSet
 	log       *manifest.Log
 	set       *memtableSet
@@ -97,6 +105,10 @@ type LSM struct {
 
 	mu     sync.Mutex
 	closed bool
+
+	// fatal latches the first unrecoverable failure. Once set, every
+	// operation refuses rather than pretending the engine is healthy.
+	fatal error
 }
 
 // Compile-time proof that the durable engine satisfies the public interface.
@@ -123,7 +135,8 @@ func Open(opts Options) (*LSM, error) {
 	if opts.Dir == "" {
 		return nil, fmt.Errorf("engine: Dir is required")
 	}
-	if err := os.MkdirAll(opts.Dir, 0o700); err != nil {
+	fsys := vfs.Or(opts.FS)
+	if err := fsys.MkdirAll(opts.Dir, 0o700); err != nil {
 		return nil, fmt.Errorf("engine: create %s: %w", opts.Dir, err)
 	}
 
@@ -135,12 +148,12 @@ func Open(opts Options) (*LSM, error) {
 		blocks = cache.New(opts.BlockCacheBytes)
 	}
 
-	vs, log, err := openManifest(opts.Dir)
+	vs, log, err := openManifest(fsys, opts.Dir)
 	if err != nil {
 		return nil, err
 	}
 
-	if _, err := manifest.SweepOrphans(opts.Dir, vs.Current()); err != nil {
+	if _, err := manifest.SweepOrphans(fsys, opts.Dir, vs.Current()); err != nil {
 		_ = log.Close()
 		return nil, err
 	}
@@ -149,7 +162,7 @@ func Open(opts Options) (*LSM, error) {
 	// replayed writes keep the sequence numbers they were acknowledged with
 	// and the new WAL gets a number above every file replay touched.
 	replayed := memtable.NewSkipList()
-	highest, err := wal.Recover(opts.Dir, func(seq uint64, rec wal.Record) error {
+	highest, err := wal.Recover(fsys, opts.Dir, func(seq uint64, rec wal.Record) error {
 		return replayed.Insert(memtable.Entry{
 			Key:       rec.Key,
 			Sequence:  seq,
@@ -168,7 +181,7 @@ func Open(opts Options) (*LSM, error) {
 	// The WALs that existed before this run opened its own. They are the
 	// ones replay just consumed, and they must be deleted afterwards -- see
 	// retireReplayedWALs.
-	consumed, err := existingWALs(opts.Dir)
+	consumed, err := existingWALs(fsys, opts.Dir)
 	if err != nil {
 		_ = log.Close()
 		return nil, err
@@ -182,6 +195,7 @@ func Open(opts Options) (*LSM, error) {
 		NextFileNumber: vs.NextFileNumber,
 		SyncPolicy:     opts.SyncPolicy,
 		FirstSequence:  highest,
+		FS:             fsys,
 	})
 	if err != nil {
 		_ = log.Close()
@@ -190,10 +204,11 @@ func Open(opts Options) (*LSM, error) {
 
 	e := &LSM{
 		dir:     opts.Dir,
+		fs:      fsys,
 		vs:      vs,
 		log:     log,
 		set:     set,
-		tables:  &dirTables{dir: opts.Dir, cache: blocks},
+		tables:  &dirTables{dir: opts.Dir, cache: blocks, fs: fsys},
 		cache:   blocks,
 		policy:  opts.SyncPolicy,
 		flusher: nil,
@@ -201,6 +216,7 @@ func Open(opts Options) (*LSM, error) {
 	tableOpts := sstable.WriterOptions{
 		BitsPerKey: opts.BitsPerKey,
 		BlockSize:  opts.BlockSize,
+		FS:         fsys,
 	}
 
 	e.flusher = NewFlusher(set, opts.Dir, log, vs)
@@ -219,6 +235,7 @@ func Open(opts Options) (*LSM, error) {
 			Opts:           opts.Compaction,
 			TableOpts:      tableOpts,
 			Cache:          blocks,
+			FS:             fsys,
 			NextFileNumber: vs.NextFileNumber,
 		},
 		Committer: &compaction.Committer{
@@ -226,6 +243,7 @@ func Open(opts Options) (*LSM, error) {
 			Log:      log,
 			Versions: vs,
 			Cache:    blocks,
+			FS:       fsys,
 		},
 		Logger: opts.Logger,
 	})
@@ -267,8 +285,8 @@ func Open(opts Options) (*LSM, error) {
 // appear nowhere in it. Trusting the manifest alone hands out a number that
 // is already on disk, and the create fails or, worse, succeeds against a
 // stale file.
-func highestFileNumber(dir string) (uint64, error) {
-	entries, err := os.ReadDir(dir)
+func highestFileNumber(fsys vfs.FS, dir string) (uint64, error) {
+	entries, err := fsys.ReadDir(dir)
 	if err != nil {
 		return 0, fmt.Errorf("engine: read dir %s: %w", dir, err)
 	}
@@ -303,18 +321,18 @@ func highestFileNumber(dir string) (uint64, error) {
 
 // openManifest recovers the existing manifest, or lays down a fresh one for a
 // directory that has never held a database.
-func openManifest(dir string) (*manifest.VersionSet, *manifest.Log, error) {
-	_, err := manifest.ReadCurrent(dir)
+func openManifest(fsys vfs.FS, dir string) (*manifest.VersionSet, *manifest.Log, error) {
+	_, err := manifest.ReadCurrent(fsys, dir)
 	switch {
 	case err == nil:
-		vs, err := manifest.Recover(dir)
+		vs, err := manifest.Recover(fsys, dir)
 		if err != nil {
 			return nil, nil, err
 		}
 
 		// Advance the allocator past everything on disk before handing out
 		// the new manifest's number.
-		highest, err := highestFileNumber(dir)
+		highest, err := highestFileNumber(fsys, dir)
 		if err != nil {
 			return nil, nil, err
 		}
@@ -322,14 +340,14 @@ func openManifest(dir string) (*manifest.VersionSet, *manifest.Log, error) {
 		// Append to a new manifest rather than the replayed one. The old file
 		// stays as it is, so a failure here leaves the previous CURRENT
 		// pointing at a manifest that is still complete and readable.
-		log, err := manifest.CreateLog(dir, vs.NextFileNumber())
+		log, err := manifest.CreateLog(fsys, dir, vs.NextFileNumber())
 		if err != nil {
 			return nil, nil, err
 		}
 		if err := seedManifest(log, vs); err != nil {
 			return nil, nil, err
 		}
-		if err := manifest.WriteCurrent(dir, log.Name()); err != nil {
+		if err := manifest.WriteCurrent(fsys, dir, log.Name()); err != nil {
 			_ = log.Close()
 			return nil, nil, err
 		}
@@ -337,11 +355,11 @@ func openManifest(dir string) (*manifest.VersionSet, *manifest.Log, error) {
 
 	case errors.Is(err, os.ErrNotExist):
 		vs := manifest.NewVersionSet()
-		log, err := manifest.CreateLog(dir, vs.NextFileNumber())
+		log, err := manifest.CreateLog(fsys, dir, vs.NextFileNumber())
 		if err != nil {
 			return nil, nil, err
 		}
-		if err := manifest.WriteCurrent(dir, log.Name()); err != nil {
+		if err := manifest.WriteCurrent(fsys, dir, log.Name()); err != nil {
 			_ = log.Close()
 			return nil, nil, err
 		}
@@ -409,8 +427,8 @@ func (e *LSM) reloadReplayed(replayed *memtable.SkipList) error {
 }
 
 // existingWALs lists the WAL files already in dir.
-func existingWALs(dir string) ([]string, error) {
-	entries, err := os.ReadDir(dir)
+func existingWALs(fsys vfs.FS, dir string) ([]string, error) {
+	entries, err := fsys.ReadDir(dir)
 	if err != nil {
 		return nil, fmt.Errorf("engine: read dir %s: %w", dir, err)
 	}
@@ -447,11 +465,11 @@ func (e *LSM) retireReplayedWALs(consumed []string) error {
 	}
 
 	for _, name := range consumed {
-		if err := os.Remove(filepath.Join(e.dir, name)); err != nil && !errors.Is(err, os.ErrNotExist) {
+		if err := e.fs.Remove(filepath.Join(e.dir, name)); err != nil && !errors.Is(err, os.ErrNotExist) {
 			return fmt.Errorf("engine: remove replayed wal %s: %w", name, err)
 		}
 	}
-	return syncDir(e.dir)
+	return syncDir(e.fs, e.dir)
 }
 
 // Put stores value under key.
@@ -475,10 +493,10 @@ func (e *LSM) Put(key, value []byte) error {
 	e.userBytes.Add(uint64(len(key) + len(value)))
 
 	if _, _, err := e.set.Add(key, value, false); err != nil {
-		return err
+		return e.guard(err)
 	}
 	e.flusher.Trigger()
-	return e.flusher.Err()
+	return e.guard(e.flusher.Err())
 }
 
 // Get returns the value stored under key, or ErrNotFound.
@@ -549,10 +567,10 @@ func (e *LSM) Delete(key []byte) (bool, error) {
 	e.userBytes.Add(uint64(len(key)))
 
 	if _, _, err := e.set.Add(key, nil, true); err != nil {
-		return false, err
+		return false, e.guard(err)
 	}
 	e.flusher.Trigger()
-	return existed, e.flusher.Err()
+	return existed, e.guard(e.flusher.Err())
 }
 
 // Stats reports engine state for INFO.
@@ -636,7 +654,29 @@ func (e *LSM) checkOpen() error {
 	if e.closed {
 		return ErrClosed
 	}
-	return nil
+	// The fatal check comes after the closed check so that a poisoned
+	// database that has been closed reports the ordinary thing.
+	return e.fatal
+}
+
+// guard latches an unrecoverable failure and returns err unchanged.
+//
+// A failed fsync is the only one today. It is latched here rather than at the
+// point it happens because the write path returns it through several layers,
+// and the property that matters is not where it was noticed but that no
+// operation after it is allowed to succeed. Anything else lets the next write
+// be acknowledged on the strength of an fsync that already failed.
+func (e *LSM) guard(err error) error {
+	if err == nil || !errors.Is(err, wal.ErrSyncFailed) {
+		return err
+	}
+
+	e.mu.Lock()
+	if e.fatal == nil {
+		e.fatal = fmt.Errorf("%w: %w", ErrUnrecoverable, err)
+	}
+	e.mu.Unlock()
+	return err
 }
 
 // scanSources assembles every iterator the scan must merge, newest first.
@@ -752,10 +792,10 @@ func (e *LSM) Flush() error {
 		return err
 	}
 	if err := e.set.rotate(); err != nil {
-		return err
+		return e.guard(err)
 	}
 	if err := e.flusher.DrainQueue(); err != nil {
-		return err
+		return e.guard(err)
 	}
 
 	// Draining compaction too is what makes FLUSH mean "the tree is
@@ -769,7 +809,7 @@ func (e *LSM) Flush() error {
 // is the denominator of space amplification. It must be called only after a
 // drain.
 func (e *LSM) measureLive() error {
-	logical, err := measureLogicalBytes(e.dir, e.vs.Current())
+	logical, err := measureLogicalBytes(e.fs, e.dir, e.vs.Current())
 	if err != nil {
 		return err
 	}

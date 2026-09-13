@@ -2,9 +2,11 @@ package wal
 
 import (
 	"encoding/binary"
+	"errors"
 	"fmt"
 	"hash/crc32"
-	"os"
+
+	"github.com/AbishekRaj2007/Strata/internal/vfs"
 )
 
 // crcTable is the Castagnoli polynomial docs/format.md §0 fixes for every
@@ -18,7 +20,7 @@ var crcTable = crc32.MakeTable(crc32.Castagnoli)
 // A Writer is not safe for concurrent use. Serialising writes is the caller's
 // job; the Syncer coordinates the fsyncs that follow them.
 type Writer struct {
-	f *os.File
+	f vfs.File
 
 	// buf accumulates the block being filled. It is flushed when full and on
 	// every Write, so bytes reach the OS before the Syncer is asked to make
@@ -37,7 +39,11 @@ type Writer struct {
 }
 
 // NewWriter frames batches into f, appending from its current end.
-func NewWriter(f *os.File) *Writer {
+//
+// f is a vfs.File rather than an *os.File so a test can fail the writes and
+// the fsyncs underneath a real WAL (T7.2). The framing is unchanged either
+// way: it is the same bytes at the same offsets.
+func NewWriter(f vfs.File) *Writer {
 	return &Writer{f: f}
 }
 
@@ -124,10 +130,21 @@ func (w *Writer) Offset() int64 {
 	return w.offset
 }
 
+// ErrSyncFailed marks an error as a failed fsync rather than any other kind
+// of I/O failure.
+//
+// The distinction is load-bearing. A failed write can be retried: nothing was
+// promised and nothing is ambiguous. A failed fsync cannot. On Linux the
+// error is reported exactly once and the dirty page is then dropped, so a
+// caller that retries is told the data is safe when it is gone. Everything
+// above this layer uses the sentinel to tell the two apart and to refuse to
+// carry on after the second.
+var ErrSyncFailed = errors.New("fsync failed")
+
 // Sync forces everything written so far to physical media. Part of Syncable.
 func (w *Writer) Sync() error {
 	if err := w.f.Sync(); err != nil {
-		return fmt.Errorf("wal: sync: %w", err)
+		return fmt.Errorf("wal: sync: %w: %w", ErrSyncFailed, err)
 	}
 	return nil
 }
@@ -136,7 +153,7 @@ func (w *Writer) Sync() error {
 func (w *Writer) Close() error {
 	if err := w.f.Sync(); err != nil {
 		_ = w.f.Close()
-		return fmt.Errorf("wal: sync on close: %w", err)
+		return fmt.Errorf("wal: sync on close: %w: %w", ErrSyncFailed, err)
 	}
 	if err := w.f.Close(); err != nil {
 		return fmt.Errorf("wal: close: %w", err)

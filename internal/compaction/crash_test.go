@@ -72,11 +72,11 @@ func tables(t *testing.T, dir string) []string {
 func restart(t *testing.T, dir string) (*manifest.VersionSet, int) {
 	t.Helper()
 
-	vs, err := manifest.Recover(dir)
+	vs, err := manifest.Recover(nil, dir)
 	if err != nil {
 		t.Fatalf("recover: %v", err)
 	}
-	swept, err := manifest.SweepOrphans(dir, vs.Current())
+	swept, err := manifest.SweepOrphans(nil, dir, vs.Current())
 	if err != nil {
 		t.Fatalf("sweep: %v", err)
 	}

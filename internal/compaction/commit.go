@@ -6,6 +6,7 @@ import (
 
 	"github.com/AbishekRaj2007/Strata/internal/cache"
 	"github.com/AbishekRaj2007/Strata/internal/manifest"
+	"github.com/AbishekRaj2007/Strata/internal/vfs"
 )
 
 // Committer makes a finished compaction visible.
@@ -40,6 +41,10 @@ type Committer struct {
 
 	// Versions holds the current version and installs the replacement.
 	Versions *manifest.VersionSet
+
+	// FS is the filesystem obsolete files are removed through. Nil is the
+	// real one.
+	FS vfs.FS
 
 	// Cache is the shared block cache. Blocks of a deleted file are evicted
 	// from it, since nothing will ever read that file again and the LRU
@@ -191,7 +196,7 @@ func (cm *Committer) step(s CommitStep) error {
 // blocks nothing will ever read again, so they never become least recently
 // used by access and the LRU works around them forever.
 func (cm *Committer) DropObsolete() error {
-	deleted, err := cm.Versions.DeleteObsolete(cm.Dir)
+	deleted, err := cm.Versions.DeleteObsolete(cm.FS, cm.Dir)
 	for _, number := range deleted {
 		cm.Cache.EvictFile(number)
 	}

@@ -12,11 +12,11 @@ import (
 func newLog(t *testing.T) (dir string, l *Log) {
 	t.Helper()
 	dir = t.TempDir()
-	l, err := CreateLog(dir, 1)
+	l, err := CreateLog(nil, dir, 1)
 	if err != nil {
 		t.Fatalf("CreateLog: %v", err)
 	}
-	if err := WriteCurrent(dir, l.Name()); err != nil {
+	if err := WriteCurrent(nil, dir, l.Name()); err != nil {
 		t.Fatalf("WriteCurrent: %v", err)
 	}
 	return dir, l
@@ -39,7 +39,7 @@ func TestLogAppendAndRecoverRoundTrip(t *testing.T) {
 		t.Fatalf("Close: %v", err)
 	}
 
-	vs, err := Recover(dir)
+	vs, err := Recover(nil, dir)
 	if err != nil {
 		t.Fatalf("Recover: %v", err)
 	}
@@ -99,7 +99,7 @@ func TestRecoverReconstructs200FilesAcrossFourLevels(t *testing.T) {
 		t.Fatalf("Close: %v", err)
 	}
 
-	vs, err := Recover(dir)
+	vs, err := Recover(nil, dir)
 	if err != nil {
 		t.Fatalf("Recover: %v", err)
 	}
@@ -181,11 +181,11 @@ func TestRecoverStopsAtATruncatedEdit(t *testing.T) {
 		if err := os.WriteFile(filepath.Join(truncDir, ManifestName(1)), full[:cut], 0o600); err != nil {
 			t.Fatalf("write truncated: %v", err)
 		}
-		if err := WriteCurrent(truncDir, ManifestName(1)); err != nil {
+		if err := WriteCurrent(nil, truncDir, ManifestName(1)); err != nil {
 			t.Fatalf("WriteCurrent: %v", err)
 		}
 
-		vs, err := Recover(truncDir)
+		vs, err := Recover(nil, truncDir)
 		if err != nil {
 			t.Fatalf("cut %d: Recover: %v", cut, err)
 		}
@@ -235,7 +235,7 @@ func TestReplayIsOrderSensitive(t *testing.T) {
 		t.Fatalf("Close: %v", err)
 	}
 
-	vs, err := Recover(dir)
+	vs, err := Recover(nil, dir)
 	if err != nil {
 		t.Fatalf("Recover: %v", err)
 	}
@@ -279,7 +279,7 @@ func TestRecoverRejectsCorruptionAfterValidRecords(t *testing.T) {
 		t.Fatalf("write: %v", err)
 	}
 
-	if _, err := Recover(dir); err == nil {
+	if _, err := Recover(nil, dir); err == nil {
 		t.Fatal("Recover accepted a corrupted record with valid records after it")
 	}
 }
@@ -309,7 +309,7 @@ func TestAppendSkipsEmptyEdits(t *testing.T) {
 // TestRecoverOnMissingCurrent checks a directory with no CURRENT is reported
 // rather than silently recovering an empty version.
 func TestRecoverOnMissingCurrent(t *testing.T) {
-	if _, err := Recover(t.TempDir()); err == nil {
+	if _, err := Recover(nil, t.TempDir()); err == nil {
 		t.Fatal("Recover succeeded with no CURRENT file")
 	} else if !errors.Is(err, os.ErrNotExist) && !errors.Is(err, ErrCorrupt) {
 		t.Logf("Recover error (acceptable, recorded for reference): %v", err)

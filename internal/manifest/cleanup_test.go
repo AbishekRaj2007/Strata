@@ -43,7 +43,7 @@ func TestDeleteObsolete(t *testing.T) {
 	touch(t, dir, tableName(1))
 
 	// While the file is live, nothing is deleted.
-	deleted, err := vs.DeleteObsolete(dir)
+	deleted, err := vs.DeleteObsolete(nil, dir)
 	n := len(deleted)
 	if err != nil {
 		t.Fatalf("DeleteObsolete: %v", err)
@@ -61,7 +61,7 @@ func TestDeleteObsolete(t *testing.T) {
 		t.Fatalf("Apply delete: %v", err)
 	}
 
-	deleted, err = vs.DeleteObsolete(dir)
+	deleted, err = vs.DeleteObsolete(nil, dir)
 	n = len(deleted)
 	if err != nil {
 		t.Fatalf("DeleteObsolete: %v", err)
@@ -96,7 +96,7 @@ func TestDeleteObsoleteWaitsForReaders(t *testing.T) {
 		t.Fatalf("Apply delete: %v", err)
 	}
 
-	if deleted, err := vs.DeleteObsolete(dir); err != nil || len(deleted) != 0 {
+	if deleted, err := vs.DeleteObsolete(nil, dir); err != nil || len(deleted) != 0 {
 		t.Fatalf("DeleteObsolete = %v, %v; want none, nil while a reader holds the version", deleted, err)
 	}
 	if _, err := os.Stat(filepath.Join(dir, tableName(1))); err != nil {
@@ -105,7 +105,7 @@ func TestDeleteObsoleteWaitsForReaders(t *testing.T) {
 
 	vs.Release(held)
 
-	if deleted, err := vs.DeleteObsolete(dir); err != nil || len(deleted) != 1 {
+	if deleted, err := vs.DeleteObsolete(nil, dir); err != nil || len(deleted) != 1 {
 		t.Fatalf("DeleteObsolete = %v, %v; want one file, nil after release", deleted, err)
 	}
 }
@@ -127,7 +127,7 @@ func TestDeleteObsoleteToleratesMissingFiles(t *testing.T) {
 		t.Fatalf("Apply delete: %v", err)
 	}
 
-	if _, err := vs.DeleteObsolete(dir); err != nil {
+	if _, err := vs.DeleteObsolete(nil, dir); err != nil {
 		t.Errorf("DeleteObsolete on an already-absent file = %v, want nil", err)
 	}
 }
@@ -154,7 +154,7 @@ func TestSweepOrphans(t *testing.T) {
 	touch(t, dir, CurrentFile)
 	touch(t, dir, "LOCK")
 
-	removed, err := SweepOrphans(dir, v)
+	removed, err := SweepOrphans(nil, dir, v)
 	if err != nil {
 		t.Fatalf("SweepOrphans: %v", err)
 	}
@@ -179,7 +179,7 @@ func TestSweepOrphansOnEmptyVersion(t *testing.T) {
 	touch(t, dir, tableName(1))
 	touch(t, dir, tableName(2))
 
-	removed, err := SweepOrphans(dir, NewVersion())
+	removed, err := SweepOrphans(nil, dir, NewVersion())
 	if err != nil {
 		t.Fatalf("SweepOrphans: %v", err)
 	}

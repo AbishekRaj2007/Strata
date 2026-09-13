@@ -341,6 +341,33 @@ func (f *faultFile) Write(p []byte) (int, error) {
 	}
 }
 
+// WriteAt is the WAL's write: a partial block is rewritten in place as it
+// grows, so the same offset is written repeatedly.
+func (f *faultFile) WriteAt(p []byte, off int64) (int, error) {
+	fault, ok := f.in.check(OpWrite, f.Name())
+	if !ok {
+		return f.File.WriteAt(p, off)
+	}
+
+	switch fault.Mode {
+	case ModeLatency:
+		time.Sleep(fault.Delay)
+		return f.File.WriteAt(p, off)
+
+	case ModeTorn:
+		half := len(p) / 2
+		n, err := f.File.WriteAt(p[:half], off)
+		if err != nil {
+			return n, err
+		}
+		return n, fmt.Errorf("writeat %s: %w (torn after %d of %d bytes)",
+			f.Name(), fault.err(), n, len(p))
+
+	default:
+		return 0, fmt.Errorf("writeat %s: %w", f.Name(), fault.err())
+	}
+}
+
 func (f *faultFile) Read(p []byte) (int, error) {
 	fault, ok := f.in.check(OpRead, f.Name())
 	if !ok {

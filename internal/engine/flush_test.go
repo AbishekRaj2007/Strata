@@ -27,11 +27,11 @@ func newFlushEnv(t *testing.T, threshold, maxImmutable int) *flushEnv {
 	dir := t.TempDir()
 
 	vs := manifest.NewVersionSet()
-	log, err := manifest.CreateLog(dir, vs.NextFileNumber())
+	log, err := manifest.CreateLog(nil, dir, vs.NextFileNumber())
 	if err != nil {
 		t.Fatalf("CreateLog: %v", err)
 	}
-	if err := manifest.WriteCurrent(dir, log.Name()); err != nil {
+	if err := manifest.WriteCurrent(nil, dir, log.Name()); err != nil {
 		t.Fatalf("WriteCurrent: %v", err)
 	}
 
@@ -177,7 +177,7 @@ func TestAbortAfterManifestSyncLeavesCommittedData(t *testing.T) {
 	}
 
 	// The commit happened, so a replay must see the file.
-	vs, err := manifest.Recover(env.dir)
+	vs, err := manifest.Recover(nil, env.dir)
 	if err != nil {
 		t.Fatalf("Recover: %v", err)
 	}
@@ -203,7 +203,7 @@ func TestFlushedDataIsReadableAfterReplay(t *testing.T) {
 		t.Fatalf("DrainQueue: %v", err)
 	}
 
-	vs, err := manifest.Recover(env.dir)
+	vs, err := manifest.Recover(nil, env.dir)
 	if err != nil {
 		t.Fatalf("Recover: %v", err)
 	}

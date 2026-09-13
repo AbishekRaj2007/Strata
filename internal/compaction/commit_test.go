@@ -25,13 +25,13 @@ func newFixture(t *testing.T) *fixture {
 	dir := t.TempDir()
 
 	vs := manifest.NewVersionSet()
-	log, err := manifest.CreateLog(dir, vs.NextFileNumber())
+	log, err := manifest.CreateLog(nil, dir, vs.NextFileNumber())
 	if err != nil {
 		t.Fatalf("create manifest: %v", err)
 	}
 	t.Cleanup(func() { _ = log.Close() })
 
-	if err := manifest.WriteCurrent(dir, log.Name()); err != nil {
+	if err := manifest.WriteCurrent(nil, dir, log.Name()); err != nil {
 		t.Fatalf("write CURRENT: %v", err)
 	}
 
@@ -138,7 +138,7 @@ func TestCommitInstallsTheOutputsAndRetiresTheInputs(t *testing.T) {
 
 	// And the commit is durable: a replay of the manifest sees the same
 	// thing, which is what makes the crash-after case "it fully happened".
-	replayed, err := manifest.Recover(f.dir)
+	replayed, err := manifest.Recover(nil, f.dir)
 	if err != nil {
 		t.Fatalf("recover: %v", err)
 	}
@@ -217,7 +217,7 @@ func TestCommitRejectsAnInapplicableEditBeforeWriting(t *testing.T) {
 
 	// The rejected edit must not be in the manifest either: a replay that
 	// hit it would fail to recover the database at all.
-	if _, err := manifest.Recover(f.dir); err != nil {
+	if _, err := manifest.Recover(nil, f.dir); err != nil {
 		t.Errorf("the rejected edit reached the manifest and broke replay: %v", err)
 	}
 }
@@ -239,11 +239,11 @@ func TestOrphanedOutputsAreSweptAtStartup(t *testing.T) {
 	}
 
 	// The crash lands here: outputs on disk, no manifest record.
-	replayed, err := manifest.Recover(f.dir)
+	replayed, err := manifest.Recover(nil, f.dir)
 	if err != nil {
 		t.Fatalf("recover: %v", err)
 	}
-	removed, err := manifest.SweepOrphans(f.dir, replayed.Current())
+	removed, err := manifest.SweepOrphans(nil, f.dir, replayed.Current())
 	if err != nil {
 		t.Fatalf("sweep: %v", err)
 	}

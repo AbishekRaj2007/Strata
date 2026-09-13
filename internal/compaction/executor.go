@@ -5,13 +5,13 @@ import (
 	"errors"
 	"fmt"
 	"io/fs"
-	"os"
 	"path/filepath"
 
 	"github.com/AbishekRaj2007/Strata/internal/cache"
 	"github.com/AbishekRaj2007/Strata/internal/manifest"
 	"github.com/AbishekRaj2007/Strata/internal/memtable"
 	"github.com/AbishekRaj2007/Strata/internal/sstable"
+	"github.com/AbishekRaj2007/Strata/internal/vfs"
 )
 
 // Executor merges a compaction's inputs into new output tables.
@@ -37,6 +37,11 @@ type Executor struct {
 	// Cache is the shared block cache, used for reading inputs. Nil is
 	// usable.
 	Cache *cache.Cache
+
+	// FS is the filesystem inputs are read through and abandoned outputs
+	// removed through. Nil is the real one. Outputs are written through
+	// TableOpts.FS, which the engine sets to the same filesystem.
+	FS vfs.FS
 
 	// NextFileNumber allocates output file numbers from the same monotonic
 	// sequence everything else in the directory uses.
@@ -124,7 +129,7 @@ func (e *Executor) Run(c *Compaction) (res *Result, err error) {
 			_ = out.Abort()
 		}
 		for _, w := range written {
-			_ = removeTable(e.Dir, w.Number())
+			_ = removeTable(e.FS, e.Dir, w.Number())
 		}
 		res = nil
 	}()
@@ -231,6 +236,7 @@ func (e *Executor) openInputs(c *Compaction) ([]*sstable.Table, error) {
 		t, err := sstable.OpenWith(filepath.Join(e.Dir, f.Name()), sstable.OpenOptions{
 			Number: f.Number,
 			Cache:  e.Cache,
+			FS:     e.FS,
 		})
 		if err != nil {
 			for _, prev := range opened {
@@ -260,9 +266,9 @@ func canceled(ch <-chan struct{}) bool {
 // removeTable deletes an output file that a failed compaction abandoned. A
 // file already gone is not an error: nothing references it either way, and
 // the only thing that matters is that it is not there afterwards.
-func removeTable(dir string, number uint64) error {
+func removeTable(fsys vfs.FS, dir string, number uint64) error {
 	path := filepath.Join(dir, fmt.Sprintf("%06d.sst", number))
-	if err := os.Remove(path); err != nil && !errors.Is(err, fs.ErrNotExist) {
+	if err := vfs.Or(fsys).Remove(path); err != nil && !errors.Is(err, fs.ErrNotExist) {
 		return fmt.Errorf("compaction: remove abandoned output %d: %w", number, err)
 	}
 	return nil

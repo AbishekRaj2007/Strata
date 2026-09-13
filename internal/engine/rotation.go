@@ -2,12 +2,12 @@ package engine
 
 import (
 	"fmt"
-	"os"
 	"path/filepath"
 	"sync"
 	"time"
 
 	"github.com/AbishekRaj2007/Strata/internal/memtable"
+	"github.com/AbishekRaj2007/Strata/internal/vfs"
 	"github.com/AbishekRaj2007/Strata/internal/wal"
 )
 
@@ -55,6 +55,10 @@ type RotationConfig struct {
 	// reinstating it here is T2.2's job, not this file's.
 	SyncPolicy wal.SyncPolicy
 
+	// FS is the filesystem WAL files are created and fsynced through. Nil
+	// is the real one.
+	FS vfs.FS
+
 	// FirstSequence seeds the sequence counter after recovery, so that
 	// sequence numbers continue past everything the replayed WAL contained
 	// rather than restarting and colliding with it.
@@ -70,7 +74,7 @@ type RotationConfig struct {
 type slot struct {
 	table  memtable.Memtable
 	wal    *wal.Writer
-	file   *os.File
+	file   vfs.File
 	number uint64
 }
 
@@ -141,7 +145,7 @@ func (s *memtableSet) openSlot() (*slot, error) {
 	number := s.cfg.NextFileNumber()
 	path := filepath.Join(s.cfg.Dir, fmt.Sprintf("%06d.wal", number))
 
-	f, err := os.OpenFile(path, os.O_CREATE|os.O_EXCL|os.O_WRONLY, 0o600)
+	f, err := vfs.Or(s.cfg.FS).Create(path)
 	if err != nil {
 		return nil, fmt.Errorf("rotation: create wal %s: %w", path, err)
 	}
@@ -149,7 +153,7 @@ func (s *memtableSet) openSlot() (*slot, error) {
 	// A file is not durable until the directory entry naming it is durable.
 	// Skipping this leaves a crash window in which the WAL protecting
 	// acknowledged writes does not exist after a restart.
-	if err := syncDir(s.cfg.Dir); err != nil {
+	if err := syncDir(s.cfg.FS, s.cfg.Dir); err != nil {
 		f.Close()
 		return nil, err
 	}
@@ -158,14 +162,8 @@ func (s *memtableSet) openSlot() (*slot, error) {
 }
 
 // syncDir fsyncs a directory so that entries created in it are durable.
-func syncDir(dir string) error {
-	d, err := os.Open(dir)
-	if err != nil {
-		return fmt.Errorf("rotation: open dir %s: %w", dir, err)
-	}
-	defer d.Close()
-
-	if err := d.Sync(); err != nil {
+func syncDir(fsys vfs.FS, dir string) error {
+	if err := vfs.SyncDir(fsys, dir); err != nil {
 		return fmt.Errorf("rotation: fsync dir %s: %w", dir, err)
 	}
 	return nil

@@ -5,6 +5,7 @@ import (
 
 	"github.com/AbishekRaj2007/Strata/internal/manifest"
 	"github.com/AbishekRaj2007/Strata/internal/sstable"
+	"github.com/AbishekRaj2007/Strata/internal/vfs"
 )
 
 // Amplification is the three costs a leveled LSM trades against each other.
@@ -107,13 +108,16 @@ func (a Amplification) String() string {
 // rather than a measurement's. After settling, the non-overlap invariant
 // below L0 means a key is at most once per level and the top-down walk is
 // exact.
-func measureLogicalBytes(dir string, v *manifest.Version) (uint64, error) {
+func measureLogicalBytes(fsys vfs.FS, dir string, v *manifest.Version) (uint64, error) {
 	seen := make(map[string]struct{})
 	var total uint64
 
 	for level := 0; level < manifest.NumLevels; level++ {
 		for _, f := range v.Files(level) {
-			t, err := sstable.Open(fmt.Sprintf("%s/%s", dir, f.Name()))
+			t, err := sstable.OpenWith(fmt.Sprintf("%s/%s", dir, f.Name()), sstable.OpenOptions{
+				Number: f.Number,
+				FS:     fsys,
+			})
 			if err != nil {
 				return 0, fmt.Errorf("engine: measure %s: %w", f.Name(), err)
 			}

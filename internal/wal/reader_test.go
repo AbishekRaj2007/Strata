@@ -455,7 +455,7 @@ func TestRecoverReplaysFilesInOrder(t *testing.T) {
 	}
 
 	var seen []string
-	highest, err := Recover(dir, func(seq uint64, rec Record) error {
+	highest, err := Recover(nil, dir, func(seq uint64, rec Record) error {
 		seen = append(seen, fmt.Sprintf("%d:%s", seq, rec.Key))
 		return nil
 	})
@@ -515,7 +515,7 @@ func TestTruncationInAnEarlierFileIsCorruption(t *testing.T) {
 		t.Fatalf("close: %v", err)
 	}
 
-	_, err = Recover(dir, func(uint64, Record) error { return nil })
+	_, err = Recover(nil, dir, func(uint64, Record) error { return nil })
 	if err == nil {
 		t.Fatal("Recover succeeded, want corruption from the truncated earlier file")
 	}
@@ -577,7 +577,7 @@ func TestRecoverAcceptsTruncatedHighestFile(t *testing.T) {
 	}
 
 	var seen []string
-	highest, err := Recover(dir, func(seq uint64, rec Record) error {
+	highest, err := Recover(nil, dir, func(seq uint64, rec Record) error {
 		seen = append(seen, fmt.Sprintf("%d:%s", seq, rec.Key))
 		return nil
 	})
@@ -617,7 +617,7 @@ func TestRecoverAtEveryTruncationOfHighestFile(t *testing.T) {
 		}
 
 		var maxSeen uint64
-		highest, err := Recover(dir, func(seq uint64, _ Record) error {
+		highest, err := Recover(nil, dir, func(seq uint64, _ Record) error {
 			if seq > maxSeen {
 				maxSeen = seq
 			}
@@ -638,7 +638,7 @@ func TestRecoverAtEveryTruncationOfHighestFile(t *testing.T) {
 // TestRecoverOnEmptyDirectory covers first start: no WAL files at all is a
 // fresh database, not an error.
 func TestRecoverOnEmptyDirectory(t *testing.T) {
-	highest, err := Recover(t.TempDir(), func(uint64, Record) error {
+	highest, err := Recover(nil, t.TempDir(), func(uint64, Record) error {
 		t.Error("apply called with no WAL files present")
 		return nil
 	})
@@ -668,7 +668,7 @@ func TestRecoverPropagatesApplyError(t *testing.T) {
 	}
 
 	sentinel := errors.New("memtable full")
-	if _, err := Recover(dir, func(uint64, Record) error { return sentinel }); !errors.Is(err, sentinel) {
+	if _, err := Recover(nil, dir, func(uint64, Record) error { return sentinel }); !errors.Is(err, sentinel) {
 		t.Errorf("Recover error = %v, want it to wrap the apply error", err)
 	}
 }

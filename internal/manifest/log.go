@@ -4,9 +4,9 @@ import (
 	"errors"
 	"fmt"
 	"io"
-	"os"
 	"path/filepath"
 
+	"github.com/AbishekRaj2007/Strata/internal/vfs"
 	"github.com/AbishekRaj2007/Strata/internal/wal"
 )
 
@@ -23,7 +23,7 @@ import (
 // serialises the append and the install together. Direct calls to Append are
 // for startup, before either goroutine exists.
 type Log struct {
-	f    *os.File
+	f    vfs.File
 	w    *wal.Writer
 	name string
 }
@@ -33,15 +33,16 @@ type Log struct {
 // The directory is fsynced before the Log is returned: a file is not durable
 // until the directory entry naming it is, and a manifest that vanishes on
 // crash takes the whole database with it.
-func CreateLog(dir string, number uint64) (*Log, error) {
+func CreateLog(fsys vfs.FS, dir string, number uint64) (*Log, error) {
+	fsys = vfs.Or(fsys)
 	name := ManifestName(number)
 	path := filepath.Join(dir, name)
 
-	f, err := os.OpenFile(path, os.O_CREATE|os.O_EXCL|os.O_WRONLY, 0o600)
+	f, err := fsys.Create(path)
 	if err != nil {
 		return nil, fmt.Errorf("manifest: create %s: %w", path, err)
 	}
-	if err := SyncDir(dir); err != nil {
+	if err := SyncDir(fsys, dir); err != nil {
 		_ = f.Close()
 		return nil, err
 	}
@@ -97,14 +98,15 @@ func (l *Log) Close() error {
 // accepts everything before it and stops -- the same clean-tail rule §2.3
 // gives the WAL, inherited from the shared framing. A checksum failure with
 // valid records after it is corruption and is reported as such.
-func Recover(dir string) (*VersionSet, error) {
-	name, err := ReadCurrent(dir)
+func Recover(fsys vfs.FS, dir string) (*VersionSet, error) {
+	fsys = vfs.Or(fsys)
+	name, err := ReadCurrent(fsys, dir)
 	if err != nil {
 		return nil, err
 	}
 	path := filepath.Join(dir, name)
 
-	f, err := os.Open(path)
+	f, err := fsys.Open(path)
 	if err != nil {
 		return nil, fmt.Errorf("manifest: open %s: %w", path, err)
 	}

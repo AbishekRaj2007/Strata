@@ -165,7 +165,7 @@ func runLevels(stdout io.Writer, args []string) error {
 		return err
 	}
 
-	vs, err := manifest.Recover(dir)
+	vs, err := manifest.Recover(nil, dir)
 	if err != nil {
 		return err
 	}

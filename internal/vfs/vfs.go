@@ -16,6 +16,7 @@ type File interface {
 	io.Reader
 	io.ReaderAt
 	io.Writer
+	io.WriterAt
 	io.Closer
 
 	// Sync makes everything written so far durable. A failure here is

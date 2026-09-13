@@ -4,7 +4,8 @@ import (
 	"encoding/binary"
 	"fmt"
 	"hash/crc32"
-	"os"
+
+	"github.com/AbishekRaj2007/Strata/internal/vfs"
 )
 
 // crcTable is the Castagnoli polynomial docs/format.md §0 fixes for every
@@ -18,7 +19,7 @@ var crcTable = crc32.MakeTable(crc32.Castagnoli)
 // A Writer is not safe for concurrent use. Serialising writes is the caller's
 // job; the Syncer coordinates the fsyncs that follow them.
 type Writer struct {
-	f *os.File
+	f vfs.File
 
 	// buf accumulates the block being filled. It is flushed when full and on
 	// every Write, so bytes reach the OS before the Syncer is asked to make
@@ -37,7 +38,11 @@ type Writer struct {
 }
 
 // NewWriter frames batches into f, appending from its current end.
-func NewWriter(f *os.File) *Writer {
+//
+// f is a vfs.File rather than an *os.File so a test can fail the writes and
+// the fsyncs underneath a real WAL (T7.2). The framing is unchanged either
+// way: it is the same bytes at the same offsets.
+func NewWriter(f vfs.File) *Writer {
 	return &Writer{f: f}
 }
 

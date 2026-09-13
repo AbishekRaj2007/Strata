@@ -105,6 +105,10 @@ type LSM struct {
 
 	mu     sync.Mutex
 	closed bool
+
+	// fatal latches the first unrecoverable failure. Once set, every
+	// operation refuses rather than pretending the engine is healthy.
+	fatal error
 }
 
 // Compile-time proof that the durable engine satisfies the public interface.
@@ -489,10 +493,10 @@ func (e *LSM) Put(key, value []byte) error {
 	e.userBytes.Add(uint64(len(key) + len(value)))
 
 	if _, _, err := e.set.Add(key, value, false); err != nil {
-		return err
+		return e.guard(err)
 	}
 	e.flusher.Trigger()
-	return e.flusher.Err()
+	return e.guard(e.flusher.Err())
 }
 
 // Get returns the value stored under key, or ErrNotFound.
@@ -563,10 +567,10 @@ func (e *LSM) Delete(key []byte) (bool, error) {
 	e.userBytes.Add(uint64(len(key)))
 
 	if _, _, err := e.set.Add(key, nil, true); err != nil {
-		return false, err
+		return false, e.guard(err)
 	}
 	e.flusher.Trigger()
-	return existed, e.flusher.Err()
+	return existed, e.guard(e.flusher.Err())
 }
 
 // Stats reports engine state for INFO.
@@ -650,7 +654,29 @@ func (e *LSM) checkOpen() error {
 	if e.closed {
 		return ErrClosed
 	}
-	return nil
+	// The fatal check comes after the closed check so that a poisoned
+	// database that has been closed reports the ordinary thing.
+	return e.fatal
+}
+
+// guard latches an unrecoverable failure and returns err unchanged.
+//
+// A failed fsync is the only one today. It is latched here rather than at the
+// point it happens because the write path returns it through several layers,
+// and the property that matters is not where it was noticed but that no
+// operation after it is allowed to succeed. Anything else lets the next write
+// be acknowledged on the strength of an fsync that already failed.
+func (e *LSM) guard(err error) error {
+	if err == nil || !errors.Is(err, wal.ErrSyncFailed) {
+		return err
+	}
+
+	e.mu.Lock()
+	if e.fatal == nil {
+		e.fatal = fmt.Errorf("%w: %w", ErrUnrecoverable, err)
+	}
+	e.mu.Unlock()
+	return err
 }
 
 // scanSources assembles every iterator the scan must merge, newest first.
@@ -766,10 +792,10 @@ func (e *LSM) Flush() error {
 		return err
 	}
 	if err := e.set.rotate(); err != nil {
-		return err
+		return e.guard(err)
 	}
 	if err := e.flusher.DrainQueue(); err != nil {
-		return err
+		return e.guard(err)
 	}
 
 	// Draining compaction too is what makes FLUSH mean "the tree is

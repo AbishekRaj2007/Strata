@@ -25,6 +25,22 @@ var ErrNotFound = errors.New("key not found")
 // ErrClosed reports use of an engine after Close.
 var ErrClosed = errors.New("engine is closed")
 
+// ErrUnrecoverable reports that the database has latched a failure it cannot
+// reason past, and must be closed and reopened.
+//
+// The only failure that earns this today is a failed fsync. The reason it
+// cannot be retried or ignored is that it leaves no answerable question: on
+// Linux the error is reported once and the dirty page is then discarded, so
+// after it, nobody -- not the process, not the kernel -- can say whether the
+// bytes reached the platter. Carrying on would mean acknowledging writes on
+// the strength of an fsync that already failed.
+//
+// Reopening is the recovery, and it is a real one: startup replays the WAL
+// and the manifest from what is genuinely on disk, so the database comes back
+// at the last state that is actually durable rather than the one this process
+// believed in.
+var ErrUnrecoverable = errors.New("engine is unrecoverable: close and reopen")
+
 // ErrKeyTooLarge and ErrValueTooLarge report a write that exceeds the format's
 // size limits. They are rejected here rather than deeper so that an oversized
 // write never reaches the WAL.

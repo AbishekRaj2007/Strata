@@ -153,7 +153,7 @@ func (s *Syncer) leadSync() error {
 		// A failed fsync is unrecoverable. Latching it means every writer --
 		// waiting or arriving -- is told, rather than some being released on
 		// the assumption the sync worked.
-		s.syncErr = fmt.Errorf("wal sync: %w", err)
+		s.syncErr = fmt.Errorf("wal sync: %w: %w", ErrSyncFailed, err)
 		s.cond.Broadcast()
 		return s.syncErr
 	}

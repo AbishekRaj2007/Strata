@@ -2,6 +2,11 @@ BIN_DIR := bin
 VERSION := $(shell git describe --tags --always --dirty 2>/dev/null || echo dev)
 LDFLAGS := -X main.version=$(VERSION)
 
+# Key distribution for the nightly soak. Zipfian is the default because a hot
+# head spreads one key's versions across every level, which is where ordering
+# bugs live.
+DIST ?= zipfian
+
 .DEFAULT_GOAL := help
 
 .PHONY: help
@@ -58,6 +63,15 @@ profile: build ## Capture CPU and heap profiles under load into docs/profiles/
 .PHONY: interop
 interop: build ## Drive the server with redis-cli and go-redis (T1.3 done-when)
 	test/interop/run.sh
+
+.PHONY: model
+model: ## Run the per-commit model test (100k operations)
+	go test ./test/model -timeout 30m
+
+.PHONY: model-soak
+model-soak: ## Run the nightly 10M-operation model soak (T7.1 done-when)
+	go test ./test/model -run TestModelSoak -v -timeout 6h \
+		-model.ops=10000000 -model.dist=$(DIST)
 
 .PHONY: lint
 lint: ## Run golangci-lint

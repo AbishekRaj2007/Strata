@@ -56,6 +56,26 @@ var DefaultWeights = Weights{
 	Reopen: 1,
 }
 
+// SoakWeights is the mix for runs measured in millions of operations.
+//
+// The structural operations are rare by ratio rather than absent, because at
+// ten million operations a rate that looks negligible is not: one reopen per
+// ten thousand operations is still a thousand recoveries, and one flush per
+// thousand is ten thousand tables through the compactor. The mix that makes a
+// fifty-thousand-operation run interesting makes a ten-million-operation run
+// spend all its time in restart rather than in the engine.
+//
+// The weights are large so these ratios can be expressed as integers.
+var SoakWeights = Weights{
+	Put:     5_000,
+	Get:     4_000,
+	Delete:  977,
+	Scan:    10,
+	Flush:   9,
+	Compact: 3,
+	Reopen:  1,
+}
+
 // StructuralWeights deliberately drives the tree's shape rather than its
 // contents: rotations and compactions are frequent enough that reads land in
 // the middle of them.
@@ -100,20 +120,51 @@ type GenConfig struct {
 // bugs are, and a wide key space would make almost every operation touch a
 // key nothing else ever touched.
 func Generate(rng *rand.Rand, cfg GenConfig) []Op {
+	return NewGenerator(rng, cfg).Generate(cfg.Ops)
+}
+
+// Generator produces operations from a fixed configuration, carrying the
+// state a distribution needs across calls.
+//
+// The state is why this type exists rather than a second parameter to
+// Generate: a sequential key source is a counter, and restarting it on every
+// call would make a run generated in pieces differ from the same run
+// generated in one go. A long soak generates in pieces by necessity, and it
+// has to be the same sequence.
+type Generator struct {
+	rng  *rand.Rand
+	cfg  GenConfig
+	w    Weights
+	tot  int
+	keys keySource
+}
+
+// NewGenerator prepares a generator. Zero values in cfg take their defaults
+// here, once, rather than on every call.
+func NewGenerator(rng *rand.Rand, cfg GenConfig) *Generator {
 	if cfg.KeySpace <= 0 {
 		cfg.KeySpace = 64
 	}
 	w := cfg.Weights
-	total := w.total()
-	if total <= 0 {
+	if w.total() <= 0 {
 		w = DefaultWeights
-		total = w.total()
 	}
-	keys := newKeySource(cfg.Distribution, cfg.KeySpace)
+	return &Generator{
+		rng:  rng,
+		cfg:  cfg,
+		w:    w,
+		tot:  w.total(),
+		keys: newKeySource(cfg.Distribution, cfg.KeySpace),
+	}
+}
 
-	ops := make([]Op, 0, cfg.Ops)
-	for i := 0; i < cfg.Ops; i++ {
-		key := keys.next(rng)
+// Generate returns the next n operations.
+func (g *Generator) Generate(n int) []Op {
+	rng, cfg, w, total := g.rng, g.cfg, g.w, g.tot
+
+	ops := make([]Op, 0, n)
+	for i := 0; i < n; i++ {
+		key := g.keys.next(rng)
 
 		switch pick := rng.Intn(total); {
 		case pick < w.Put:

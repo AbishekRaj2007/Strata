@@ -20,13 +20,26 @@ import (
 // about.
 type Reference struct {
 	data map[string]string
+
+	// sorted is the key set in order, rebuilt lazily after a mutation.
+	//
+	// Caching it is not an optimisation for its own sake: a full scan pages
+	// through the key set, and sorting every key on every page made the
+	// reference quadratic in the database size. At soak scale that cost
+	// dominated the engine it exists to check, which is the wrong thing for
+	// a harness to spend its time on.
+	sorted []string
+	dirty  bool
 }
 
 func NewReference() *Reference {
-	return &Reference{data: make(map[string]string)}
+	return &Reference{data: make(map[string]string), dirty: true}
 }
 
 func (r *Reference) Put(key, value []byte) error {
+	if _, existed := r.data[string(key)]; !existed {
+		r.dirty = true
+	}
 	r.data[string(key)] = string(value)
 	return nil
 }
@@ -41,8 +54,24 @@ func (r *Reference) Get(key []byte) ([]byte, error) {
 
 func (r *Reference) Delete(key []byte) (bool, error) {
 	_, existed := r.data[string(key)]
+	if existed {
+		r.dirty = true
+	}
 	delete(r.data, string(key))
 	return existed, nil
+}
+
+// keys returns the key set in order.
+func (r *Reference) keys() []string {
+	if r.dirty {
+		r.sorted = r.sorted[:0]
+		for k := range r.data {
+			r.sorted = append(r.sorted, k)
+		}
+		sort.Strings(r.sorted)
+		r.dirty = false
+	}
+	return r.sorted
 }
 
 // Scan mirrors the engine's contract: keys strictly after the cursor, in
@@ -52,11 +81,7 @@ func (r *Reference) Scan(cursor []byte, count int) (engine.ScanResult, error) {
 		count = 10
 	}
 
-	keys := make([]string, 0, len(r.data))
-	for k := range r.data {
-		keys = append(keys, k)
-	}
-	sort.Strings(keys)
+	keys := r.keys()
 
 	start := 0
 	if cursor != nil {

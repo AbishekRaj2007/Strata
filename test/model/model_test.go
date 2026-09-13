@@ -45,7 +45,8 @@ func (s *lsmSystem) Scan(cursor []byte, count int) (engine.ScanResult, error) {
 	return s.e.Scan(cursor, count)
 }
 
-func (s *lsmSystem) Flush() error { return s.e.Flush() }
+func (s *lsmSystem) Flush() error   { return s.e.Flush() }
+func (s *lsmSystem) Compact() error { return s.e.Compact() }
 
 func (s *lsmSystem) Reopen() error {
 	if err := s.e.Close(); err != nil {

@@ -95,6 +95,7 @@ const (
 	OpDelete
 	OpScan
 	OpFlush
+	OpCompact
 	OpReopen
 )
 
@@ -110,6 +111,8 @@ func (k OpKind) String() string {
 		return "SCAN"
 	case OpFlush:
 		return "FLUSH"
+	case OpCompact:
+		return "COMPACT"
 	case OpReopen:
 		return "REOPEN"
 	}
@@ -173,6 +176,10 @@ type System interface {
 	// Flush forces the active memtable to an SSTable.
 	Flush() error
 
+	// Compact settles the whole tree, so that a sequence can put a
+	// compaction at a chosen point rather than wait for one.
+	Compact() error
+
 	// Reopen closes and reopens the engine, so recovery is exercised inside
 	// the operation sequence rather than only at the end.
 	Reopen() error
@@ -181,11 +188,11 @@ type System interface {
 // Run replays ops against both implementations and reports the first
 // divergence, or nil if they agreed throughout.
 //
-// Flush and Reopen have no reference equivalent by design: they must be
-// invisible. A durable engine that returns different answers after a flush or
-// a restart is exactly the failure this harness exists to catch, so the
-// reference simply ignores them and any resulting difference shows up as a
-// divergence on the next read.
+// Flush, Compact and Reopen have no reference equivalent by design: they must
+// be invisible. A durable engine that returns different answers after a
+// flush, a compaction or a restart is exactly the failure this harness exists
+// to catch, so the reference simply ignores them and any resulting difference
+// shows up as a divergence on the next read.
 func Run(sys System, ref *Reference, ops []Op) error {
 	for i, op := range ops {
 		switch op.Kind {
@@ -239,6 +246,11 @@ func Run(sys System, ref *Reference, ops []Op) error {
 
 		case OpFlush:
 			if err := sys.Flush(); err != nil {
+				return Divergence{Index: i, Op: op, Want: "no error", Got: err.Error()}
+			}
+
+		case OpCompact:
+			if err := sys.Compact(); err != nil {
 				return Divergence{Index: i, Op: op, Want: "no error", Got: err.Error()}
 			}
 

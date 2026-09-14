@@ -253,6 +253,18 @@ func Open(opts Options) (*LSM, error) {
 	// that can put L0 over its trigger.
 	e.flusher.SetOnFlush(e.compactor.Trigger)
 
+	// Any flush failure poisons the engine immediately, not just the
+	// flusher: a partially flushed memtable leaves an orphan table only a
+	// fresh Open's sweep can account for, and a write accepted after that
+	// point would be durable in a WAL a dead flusher will never drain.
+	e.flusher.SetOnError(func(err error) {
+		e.mu.Lock()
+		if e.fatal == nil {
+			e.fatal = fmt.Errorf("%w: %w", ErrUnrecoverable, err)
+		}
+		e.mu.Unlock()
+	})
+
 	// The replayed state is loaded through the normal write path so it lands
 	// in the new WAL too. That costs one rewrite of the recovered data and
 	// buys a single code path: without it the first memtable would hold
@@ -509,8 +521,13 @@ func (e *LSM) Put(key, value []byte) error {
 	if _, _, err := e.set.Add(key, value, false); err != nil {
 		return e.guard(err)
 	}
+	// This write's own durability does not depend on the flusher: under
+	// SyncAlways, e.set.Add has already synced it. A flush failure -- this
+	// one's trigger or an earlier one still latched -- poisons every write
+	// that follows through e.fatal, but it must not retroactively fail a
+	// write that already made it to stable storage on its own.
 	e.flusher.Trigger()
-	return e.guard(e.flusher.Err())
+	return nil
 }
 
 // Get returns the value stored under key, or ErrNotFound.
@@ -583,8 +600,10 @@ func (e *LSM) Delete(key []byte) (bool, error) {
 	if _, _, err := e.set.Add(key, nil, true); err != nil {
 		return false, e.guard(err)
 	}
+	// See Put: this tombstone's own durability does not depend on the
+	// flusher, so a flush failure must not retroactively fail it.
 	e.flusher.Trigger()
-	return existed, e.guard(e.flusher.Err())
+	return existed, nil
 }
 
 // Stats reports engine state for INFO.

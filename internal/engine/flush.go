@@ -93,6 +93,15 @@ type Flusher struct {
 	// to L0, so it is the only event that can put L0 over its trigger.
 	onFlush func()
 
+	// onError, when non-nil, is called the first time a flush fails, from
+	// whichever call raised it -- the background loop or a caller's direct
+	// DrainQueue. It is how the engine's fatal latch (lsm.go's guard) learns
+	// of a failure that has nothing to do with a WAL sync: a torn SSTable
+	// write or a failed manifest commit poisons the database exactly as much
+	// as a failed WAL fsync does, because either one can leave a table on
+	// disk that only a fresh Open's orphan sweep can account for.
+	onError func(error)
+
 	mu           sync.Mutex
 	err          error
 	flushed      uint64
@@ -123,6 +132,12 @@ func (f *Flusher) SetBlockCache(c *cache.Cache) {
 // the engine uses to trigger compaction. It must be called before Start.
 func (f *Flusher) SetOnFlush(fn func()) {
 	f.onFlush = fn
+}
+
+// SetOnError registers a callback invoked the first time a flush fails. It
+// must be called before Start.
+func (f *Flusher) SetOnError(fn func(error)) {
+	f.onError = fn
 }
 
 // SetTableOptions selects the build parameters for the tables this flusher
@@ -185,11 +200,6 @@ func (f *Flusher) run() {
 
 	for {
 		if err := f.DrainQueue(); err != nil {
-			f.mu.Lock()
-			if f.err == nil {
-				f.err = err
-			}
-			f.mu.Unlock()
 			return
 		}
 
@@ -206,16 +216,42 @@ func (f *Flusher) run() {
 }
 
 // DrainQueue flushes every immutable memtable currently queued.
+//
+// A failure here is latched through fail regardless of which goroutine
+// called DrainQueue -- the background loop or, via Flush, an ordinary
+// caller. Latching only inside run would leave a caller-driven failure
+// invisible to Err and to the engine's fatal guard, and the immutable queue
+// would sit on the failed memtable forever while every write after it kept
+// being accepted as if the database were healthy.
 func (f *Flusher) DrainQueue() error {
 	for {
 		done, err := f.FlushOldest()
 		if err != nil {
-			return err
+			return f.fail(err)
 		}
 		if done {
 			return nil
 		}
 	}
+}
+
+// fail latches the first flush failure and reports it through onError.
+//
+// It fires exactly once: the callback poisons the whole engine, and every
+// call after the first is the same failure being rediscovered, not a new one
+// to report again.
+func (f *Flusher) fail(err error) error {
+	f.mu.Lock()
+	first := f.err == nil
+	if first {
+		f.err = err
+	}
+	f.mu.Unlock()
+
+	if first && f.onError != nil {
+		f.onError(err)
+	}
+	return err
 }
 
 // dropObsolete deletes every file that has lost its last reference and

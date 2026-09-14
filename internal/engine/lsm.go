@@ -354,7 +354,21 @@ func openManifest(fsys vfs.FS, dir string) (*manifest.VersionSet, *manifest.Log,
 		return vs, log, nil
 
 	case errors.Is(err, os.ErrNotExist):
+		// No CURRENT does not mean no files. A previous open that failed
+		// between creating its manifest and writing CURRENT leaves a
+		// MANIFEST behind that this branch would otherwise try to create
+		// again -- exclusive creation then fails, and the directory can
+		// never be opened again. Advancing past what is on disk is the same
+		// rule the recovery branch follows, and for the same reason:
+		// docs/format.md §1 forbids reusing a file number, and the manifest
+		// is not the authority on which numbers exist.
 		vs := manifest.NewVersionSet()
+		highest, err := highestFileNumber(fsys, dir)
+		if err != nil {
+			return nil, nil, err
+		}
+		vs.SetNextFileNumber(highest + 1)
+
 		log, err := manifest.CreateLog(fsys, dir, vs.NextFileNumber())
 		if err != nil {
 			return nil, nil, err

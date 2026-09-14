@@ -1034,7 +1034,7 @@ Extend the T4.5 model test into a serious property-testing framework: configurab
 
 ---
 
-### - [ ] T7.2 — Build the fault injection layer
+### - [x] T7.2 — Build the fault injection layer
 
 **Effort:** 5–6 h · **Model:** Opus 5 for the design
 

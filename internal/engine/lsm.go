@@ -671,6 +671,15 @@ func (e *LSM) Close() error {
 		firstErr = err
 	}
 
+	// A compaction can commit and still leave its inputs on disk, if their
+	// last reference was held by a reader that had not released it yet at
+	// the instant of commit. Nothing else is running now to collect them
+	// later, so a clean shutdown collects them itself rather than leaving
+	// that to the next Open's crash-recovery sweep.
+	if err := e.compactor.DropObsolete(); err != nil && firstErr == nil {
+		firstErr = err
+	}
+
 	if err := e.set.Close(); err != nil && firstErr == nil {
 		firstErr = err
 	}

@@ -203,6 +203,8 @@ func (s *memtableSet) Add(key, value []byte, tombstone bool) (seq uint64, endOff
 		b.AppendSet(key, value)
 	}
 
+	mark := s.active.wal.Mark()
+
 	endOffset, err = s.active.wal.Write(b)
 	if err != nil {
 		// The sequence counter is deliberately not advanced: nothing was
@@ -216,6 +218,13 @@ func (s *memtableSet) Add(key, value []byte, tombstone bool) (seq uint64, endOff
 	// visible to readers. Returning an error here leaves nothing observable.
 	if s.cfg.SyncPolicy == wal.SyncAlways {
 		if err := s.active.wal.Sync(); err != nil {
+			// The record just written is now exactly the ambiguous case
+			// Rollback exists for: on the OS, never confirmed durable. Strip
+			// it back off so nothing later mistakes it for a write that was
+			// ever acknowledged.
+			if rerr := s.active.wal.Rollback(mark); rerr != nil {
+				return 0, 0, fmt.Errorf("rotation: wal sync: %w (rollback failed: %v)", err, rerr)
+			}
 			return 0, 0, fmt.Errorf("rotation: wal sync: %w", err)
 		}
 	}

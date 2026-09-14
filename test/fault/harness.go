@@ -103,18 +103,23 @@ func RunWorkload(cfg Config) Outcome {
 		return out
 	}
 
+	// A failed reopen leaves no engine, which the loop below must stop on
+	// rather than keep calling into.
 	reopen := func() error {
 		if err := e.Close(); err != nil {
+			e = nil
 			return fmt.Errorf("close: %w", err)
 		}
-		e, err = engine.Open(opts)
+		reopened, err := engine.Open(opts)
 		if err != nil {
+			e = nil
 			return fmt.Errorf("reopen: %w", err)
 		}
+		e = reopened
 		return nil
 	}
 
-	for i := 0; i < cfg.Ops && out.Err == nil; i++ {
+	for i := 0; i < cfg.Ops && out.Err == nil && e != nil; i++ {
 		key := fmt.Sprintf("key-%03d", i%17)
 		value := fmt.Sprintf("value-%03d-%s", i, pad)
 
@@ -151,8 +156,10 @@ func RunWorkload(cfg Config) Outcome {
 
 	// The close may itself fail, and that is not a new failure worth
 	// reporting over the one that caused it.
-	if err := e.Close(); err != nil && out.Err == nil {
-		out.Err = fmt.Errorf("close: %w", err)
+	if e != nil {
+		if err := e.Close(); err != nil && out.Err == nil {
+			out.Err = fmt.Errorf("close: %w", err)
+		}
 	}
 	return out
 }

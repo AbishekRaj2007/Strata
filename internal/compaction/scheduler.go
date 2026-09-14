@@ -204,6 +204,20 @@ func (s *Scheduler) Stop() error {
 	return s.Err()
 }
 
+// DropObsolete deletes every file that has lost its last reference.
+//
+// Commit already does this for the files its own edit retires, but a file
+// whose last reference was held by a reader is not collectable at the
+// instant the commit runs. Drain calls this for exactly that reason once it
+// runs out of work; Close calls it too, for the same reason applied to
+// shutdown -- otherwise a compaction that committed just before the readers
+// holding its inputs released them leaves those files on disk with nothing
+// naming them, and a clean shutdown is supposed to mean the tree is at rest,
+// not merely that nothing is still running.
+func (s *Scheduler) DropObsolete() error {
+	return s.committer.DropObsolete()
+}
+
 // Err reports the first error the compactor hit. Compaction failing is not
 // fatal to reads -- the tree is still correct, just no longer maintained --
 // but it must not be silent.

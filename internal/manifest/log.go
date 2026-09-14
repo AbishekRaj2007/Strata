@@ -68,10 +68,22 @@ func (l *Log) Append(e *VersionEdit) error {
 		return nil
 	}
 
+	mark := l.w.Mark()
+
 	if _, err := l.w.WriteRecord(e.Encode(nil)); err != nil {
 		return fmt.Errorf("manifest: append edit: %w", err)
 	}
 	if err := l.f.Sync(); err != nil {
+		// The edit is now sitting in the file with a valid checksum and no
+		// way for a later reader to tell it apart from one that is genuinely
+		// committed. Since Append's own fsync is the commit point (§4.1),
+		// leaving it in place would let a crash resurrect a version edit --
+		// an ADD_FILE for a table nothing else ever agreed was live -- that
+		// this call is about to report as failed. Roll it back so the file
+		// on disk agrees with the answer being returned.
+		if rerr := l.w.Rollback(mark); rerr != nil {
+			return fmt.Errorf("manifest: sync %s: %w (rollback failed: %v)", l.name, err, rerr)
+		}
 		return fmt.Errorf("manifest: sync %s: %w", l.name, err)
 	}
 	return nil

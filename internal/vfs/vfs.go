@@ -24,6 +24,17 @@ type File interface {
 	// the handling in the engine.
 	Sync() error
 
+	// Truncate cuts the file back to size. It exists for the one recovery
+	// this project attempts from a failed fsync: the bytes a write handed to
+	// the OS just before that failure are not distinguishable from a
+	// genuinely durable record by content alone, so the writer rolls its own
+	// position back and truncates the file to match, before anything can
+	// replay them as if they were confirmed. It is deliberately outside the
+	// fault injector's coverage -- it runs only on the failure path this
+	// project already treats as unrecoverable, never as part of a workload's
+	// ordinary I/O.
+	Truncate(size int64) error
+
 	Stat() (fs.FileInfo, error)
 	Name() string
 }

@@ -68,6 +68,18 @@ func (w *Writer) Write(b *Batch) (int64, error) {
 // implementation serves both, so there is exactly one place where a framing
 // bug can live.
 func (w *Writer) WriteRecord(payload []byte) (int64, error) {
+	// A WriteAt below can fail partway through framing a multi-block record.
+	// The bytes that already reached the file for an earlier block in this
+	// same call are real, but this call as a whole has not: its caller
+	// treats any error as "nothing was logged" (see Add's comment on the
+	// point), and the next attempt must start from exactly where this one
+	// did, not from wherever this one gave up. Restoring the mark on every
+	// error path below is what keeps that true -- without it, a failed
+	// WriteAt would leave the writer's own position ahead of what the file
+	// actually holds, and everything appended after would be framed at the
+	// wrong offset.
+	mark := w.Mark()
+
 	first := true
 
 	for {
@@ -80,11 +92,12 @@ func (w *Writer) WriteRecord(payload []byte) (int64, error) {
 			for i := w.blockPos; i < BlockSize; i++ {
 				w.buf[i] = 0
 			}
-			w.offset += int64(BlockSize - w.blockPos)
 
 			if _, err := w.f.WriteAt(w.buf[:BlockSize], w.blockStart); err != nil {
+				w.offset, w.blockStart, w.blockPos = mark.offset, mark.blockStart, mark.blockPos
 				return 0, fmt.Errorf("wal: write block at %d: %w", w.blockStart, err)
 			}
+			w.offset += int64(BlockSize - w.blockPos)
 			w.blockStart += BlockSize
 			w.blockPos = 0
 			avail = BlockSize
@@ -118,6 +131,7 @@ func (w *Writer) WriteRecord(payload []byte) (int64, error) {
 	// Hand the partial block to the OS now; the Syncer decides when it
 	// becomes durable.
 	if _, err := w.f.WriteAt(w.buf[:w.blockPos], w.blockStart); err != nil {
+		w.offset, w.blockStart, w.blockPos = mark.offset, mark.blockStart, mark.blockPos
 		return 0, fmt.Errorf("wal: write block at %d: %w", w.blockStart, err)
 	}
 
@@ -128,6 +142,40 @@ func (w *Writer) WriteRecord(payload []byte) (int64, error) {
 // Offset reports how many bytes have been handed to the OS. Part of Syncable.
 func (w *Writer) Offset() int64 {
 	return w.offset
+}
+
+// Mark snapshots the writer's position, to be restored by Rollback if the
+// write that follows turns out not to be durable.
+type Mark struct {
+	offset     int64
+	blockStart int64
+	blockPos   int
+}
+
+// Mark captures the writer's current position, before a write whose fsync
+// might fail.
+func (w *Writer) Mark() Mark {
+	return Mark{offset: w.offset, blockStart: w.blockStart, blockPos: w.blockPos}
+}
+
+// Rollback undoes every write since m: it truncates the file back to m's
+// offset and rewinds the writer's own position to match.
+//
+// This is what makes a failed fsync actually unrecoverable-and-handled rather
+// than unrecoverable-and-ignored. The bytes a WriteRecord handed to the OS
+// just before Sync failed are, by content alone, indistinguishable from a
+// genuinely durable record: same framing, same checksum. Left in place, a
+// later reader -- this process on its next Open, or a fresh one after a real
+// crash -- has no way to know the fsync that was supposed to confirm them
+// never did, and replays a write nothing ever acknowledged. Truncating here,
+// on the failure path, is the only point where that ambiguity can still be
+// resolved.
+func (w *Writer) Rollback(m Mark) error {
+	if err := w.f.Truncate(m.offset); err != nil {
+		return fmt.Errorf("wal: truncate to %d: %w", m.offset, err)
+	}
+	w.offset, w.blockStart, w.blockPos = m.offset, m.blockStart, m.blockPos
+	return nil
 }
 
 // ErrSyncFailed marks an error as a failed fsync rather than any other kind

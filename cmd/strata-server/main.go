@@ -24,7 +24,7 @@ import (
 var version = "dev"
 
 // shutdownTimeout bounds the drain so a stuck client cannot hold the process
-// open indefinitely. Phase 2 revisits it once a WAL fsync is on the path.
+// open indefinitely.
 const shutdownTimeout = 30 * time.Second
 
 type config struct {
@@ -122,15 +122,21 @@ func run(cfg config) error {
 		"cache_mb", cfg.cacheMB,
 	)
 
-	// The map engine is Phase 1's stand-in; the LSM engine replaces it in
-	// Phase 3 behind the same interface. Nothing here is durable yet, and
-	// saying so at startup is cheaper than a bug report.
-	eng := engine.NewMemory()
-	// The sync policy is parsed and reported, but nothing acts on it until the
-	// WAL writer exists (T2.1). Saying so keeps -sync=always from reading as a
-	// durability guarantee the engine cannot currently make.
-	logger.Warn("using the in-memory engine; data is not durable and -sync has no effect yet (see plan.md T2.1, T3.5)",
-		"sync", cfg.syncPolicy)
+	policy, err := wal.ParseSyncPolicy(cfg.syncPolicy)
+	if err != nil {
+		return fmt.Errorf("parse sync policy: %w", err)
+	}
+
+	eng, err := engine.Open(engine.Options{
+		Dir:             cfg.dataDir,
+		Threshold:       cfg.memtableMB << 20,
+		SyncPolicy:      policy,
+		BlockCacheBytes: int64(cfg.cacheMB) << 20,
+		Logger:          logger,
+	})
+	if err != nil {
+		return fmt.Errorf("open engine: %w", err)
+	}
 
 	srv, err := server.New(server.Config{
 		Addr:    cfg.addr,

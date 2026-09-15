@@ -77,6 +77,7 @@ type Options struct {
 type LSM struct {
 	dir       string
 	fs        vfs.FS
+	lock      *dirLock
 	vs        *manifest.VersionSet
 	log       *manifest.Log
 	set       *memtableSet
@@ -140,6 +141,11 @@ func Open(opts Options) (*LSM, error) {
 		return nil, fmt.Errorf("engine: create %s: %w", opts.Dir, err)
 	}
 
+	lock, err := lockDir(opts.Dir)
+	if err != nil {
+		return nil, err
+	}
+
 	// A negative capacity means "no cache", which the tuning study needs as
 	// its baseline. A nil *cache.Cache is usable, so nothing downstream has
 	// to branch on it.
@@ -150,11 +156,13 @@ func Open(opts Options) (*LSM, error) {
 
 	vs, log, err := openManifest(fsys, opts.Dir)
 	if err != nil {
+		_ = lock.unlock()
 		return nil, err
 	}
 
 	if _, err := manifest.SweepOrphans(fsys, opts.Dir, vs.Current()); err != nil {
 		_ = log.Close()
+		_ = lock.unlock()
 		return nil, err
 	}
 
@@ -172,6 +180,7 @@ func Open(opts Options) (*LSM, error) {
 	})
 	if err != nil {
 		_ = log.Close()
+		_ = lock.unlock()
 		return nil, fmt.Errorf("engine: wal recovery: %w", err)
 	}
 	if s := vs.Current().LastSequence(); s > highest {
@@ -184,6 +193,7 @@ func Open(opts Options) (*LSM, error) {
 	consumed, err := existingWALs(fsys, opts.Dir)
 	if err != nil {
 		_ = log.Close()
+		_ = lock.unlock()
 		return nil, err
 	}
 
@@ -199,6 +209,7 @@ func Open(opts Options) (*LSM, error) {
 	})
 	if err != nil {
 		_ = log.Close()
+		_ = lock.unlock()
 		return nil, err
 	}
 
@@ -212,6 +223,7 @@ func Open(opts Options) (*LSM, error) {
 		cache:   blocks,
 		policy:  opts.SyncPolicy,
 		flusher: nil,
+		lock:    lock,
 	}
 	tableOpts := sstable.WriterOptions{
 		BitsPerKey: opts.BitsPerKey,
@@ -273,11 +285,13 @@ func Open(opts Options) (*LSM, error) {
 	if err := e.reloadReplayed(replayed); err != nil {
 		_ = set.Close()
 		_ = log.Close()
+		_ = lock.unlock()
 		return nil, err
 	}
 	if err := e.retireReplayedWALs(consumed); err != nil {
 		_ = set.Close()
 		_ = log.Close()
+		_ = lock.unlock()
 		return nil, err
 	}
 
@@ -684,6 +698,9 @@ func (e *LSM) Close() error {
 		firstErr = err
 	}
 	if err := e.log.Close(); err != nil && firstErr == nil {
+		firstErr = err
+	}
+	if err := e.lock.unlock(); err != nil && firstErr == nil {
 		firstErr = err
 	}
 	return firstErr

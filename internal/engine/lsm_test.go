@@ -122,7 +122,13 @@ func TestLSMRecoversFromWALWithoutACleanClose(t *testing.T) {
 			t.Fatalf("Put: %v", err)
 		}
 	}
-	// Deliberately no Close: the writes exist only in the WAL.
+	// Deliberately no Close: the writes exist only in the WAL. The directory
+	// lock is released by hand, because a real crash drops it too -- the
+	// kernel releases every flock an exiting process held -- and this test
+	// simulates the crash within one process rather than across two.
+	if err := e.lock.unlock(); err != nil {
+		t.Fatalf("unlock: %v", err)
+	}
 
 	reopened := openLSM(t, dir, 1<<30)
 	defer reopened.Close()

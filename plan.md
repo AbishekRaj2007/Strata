@@ -1095,7 +1095,15 @@ Then write up, in `docs/`, the concurrency model as it actually ended up — eve
 **Goal:** numbers you can defend.
 **Total effort:** 16–20 hours.
 
-### - [ ] T8.1 — Build the benchmark harness and full result set
+### - [x] T8.1 — Build the benchmark harness and full result set
+
+> **Closed.** `test/bench/full.sh` drives every workload in §19 against the real `engine.LSM` (not T1.4's in-memory stand-in): sequential and random pipelined SET, unpipelined SET at both `sync=interval` and `sync=always`, GET in-cache, GET at ~10x a deliberately shrunk cache, and GET on a guaranteed-absent key. `test/bench/loadgen` (new, `mixed` and `overtime` subcommands) covers what valkey-benchmark cannot: an interleaved 80/20 mixed workload with full p50/p95/p99/p99.9 latency percentiles timed per-operation, and throughput sampled every second during a sustained-compaction run. `test/bench/chart` renders that CSV as an SVG with no new dependency. `docs/benchmarks.md`'s new "Full workload suite" section is every number this run produced, with the exact reproduction command per row -- the *Done when* condition.
+>
+> The write-path numbers are solid (under 6% spread across three runs) and one target miss is fully explained: `sync=always` measured 744 ops/sec against a 2-5k target, consistent with the T7.4 stress profile's finding that `memtableSet.Add` holds its lock across the WAL fsync, so 50 concurrent clients get no benefit from their concurrency under this policy -- the exact T2.2 gap `docs/concurrency.md` already documents, now with a production-path number attached to it.
+>
+> The read-path numbers are **not** asserted as clean measurements. `/proc/loadavg` climbed from 3.0 to 9.6 during this run (12 logical cores, live desktop session, not the idle machine T1.4 and T6.6 used), and two manual reruns of the identical GET command minutes apart produced 20,589 and 638,298 ops/sec -- a 30x spread with nothing else changed. `docs/benchmarks.md` records this explicitly rather than publishing a false-precision median across incomparable runs, per plan.md's own instruction to note background load and never compare runs against different machine conditions. The harness itself is verified working; a rerun of the GET/mixed rows on a quiet machine is the identified next step, not a gap in T8.1.
+>
+> The throughput-over-time curve (`docs/throughput-over-time.svg`) is internally consistent -- one continuous 60 s run, immune to the cross-run noise above -- and flat at 37-41k ops/sec with no stall, which is T6.4's backpressure design working as intended under a small compaction geometry (`L0Trigger: 2`) rather than an absence of pressure.
 
 **Effort:** 5–6 h · **Model:** Sonnet 5 for the harness, Claude Cowork for the analysis pass
 

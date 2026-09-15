@@ -58,6 +58,10 @@ baseline: build ## Run the redis-benchmark baseline and print a benchmarks.md ta
 profile: build ## Capture CPU and heap profiles under load into docs/profiles/
 	test/bench/profile.sh
 
+.PHONY: full-bench
+full-bench: build ## Run T8.1's full workload suite against the durable engine
+	test/bench/full.sh
+
 # Not part of "test": the go-redis half is a nested module and needs network
 # access on first run. See test/interop/README.md.
 .PHONY: interop

@@ -1068,7 +1068,15 @@ Then sweep the edge cases: empty key, empty value, maximum-size key and value, a
 
 ---
 
-### - [ ] T7.4 — Complete the concurrency audit
+### - [x] T7.4 — Complete the concurrency audit
+
+> **Closed.** `go test ./... -race -short -count=1` is green across all 18 packages. `test/stress/mixed_test.go`'s `TestMixedWorkloadStress` ran the real one-hour, 100-client audit under `-race` (`-stress.duration=1h -stress.clients=100`): **52,297,151 operations, 0 errors, 3600s**, against a real `engine.LSM` and `server.Server` with a deliberately small compaction geometry (`L0Trigger: 2`, 64 KiB memtable threshold) so flushes and compactions ran continuously through the whole window rather than only at the start -- the trap, addressed directly rather than hoped past. Goroutine and file-descriptor counts, read from inside the same process via `runtime.NumGoroutine()` and `/proc/self/fd`, matched their pre-`Open` baselines within tolerance after `Close` and a settle period: zero leaks, and the file-descriptor check ran against a database that had been compacting continuously for an hour, not a quiet one.
+>
+> `goleak` was not added; a manual before/after `runtime.NumGoroutine()` comparison gives the same signal without a dependency outside CLAUDE.md's permitted set (`testify`, `xxhash`, `golang.org/x/sys/unix`) or the ADR that would require.
+>
+> Block and mutex profiles were captured both from a 30 s/150-client run and from the full hour (`-stress.profile`). Both agree on the worst contention point: `sync.(*Mutex).Lock`/`Unlock` inside `internal/engine.(*memtableSet).Add` accounts for ~98% of measured block and mutex time. The cause is exact and already understood, not mysterious -- `Add` holds its lock across the WAL fsync under `SyncAlways`, and T2.2's group-commit `wal.Syncer` is built but not wired onto this path (see plan.md's T2.2 entry and `docs/concurrency.md`'s "Known gap" section for why wiring it safely is nontrivial).
+>
+> `docs/concurrency.md` inventories every shared structure in the codebase -- `memtableSet`, `LSM`, `dirLock`, `Flusher`, `manifest.VersionSet`, `compaction.Picker`/`Scheduler`, `cache.Cache`, `wal.Syncer`, `memtable.SkipList`, `server.Server` -- what protects each, and the safety argument for each access, cross-referenced against the actual profile data above rather than written from intent alone.
 
 **Effort:** 3–4 h · **Model:** Opus 5, escalate to Fable 5 on anything that resists
 

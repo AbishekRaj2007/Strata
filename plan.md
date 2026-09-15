@@ -1048,7 +1048,11 @@ This is what real storage engine test suites do, and describing it is a strong i
 
 ---
 
-### - [ ] T7.3 — Run the corruption and edge-case sweep
+### - [x] T7.3 — Run the corruption and edge-case sweep
+
+> **Closed.** `internal/engine/corruption_test.go` holds `TestCorruptionSweep`: bit flips in one and in every SSTable, truncation at ten random offsets, a deleted SSTable, a corrupted `MANIFEST`, a corrupted `CURRENT`, and a `CURRENT` naming a nonexistent manifest. The assertion throughout is `checkNoWrongAnswers` -- an error is an acceptable outcome, a value that does not match what was written never is. `TestEdgeCaseKeysAndValues` covers the empty key, empty value, maximum-size key and value, prefix keys, strictly sequential keys across a flush, and repeated overwrites of one key. `TestRestartWithZeroData` and `TestSecondOpenOnALiveDirectoryFailsCleanly` cover the remaining two; the latter exercises the new `dirLock` (`internal/engine/lock.go`), added because nothing previously stopped two processes from sharing a directory and corrupting both the WAL and the manifest. The trap -- checksums on cache hits -- was already satisfied: `Table.loadBlock`'s doc comment states and `NewBlock` enforces that cached bytes are re-verified on every call, not only on the first read from disk.
+>
+> All green under `-race`, including the full unrelated suite (`go test ./... -short`).
 
 **Effort:** 4–5 h · **Model:** Sonnet 5
 

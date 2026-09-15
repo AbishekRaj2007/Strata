@@ -1022,7 +1022,9 @@ That plot is the single best artifact this project can produce. It shows you und
 
 This phase is what separates a project from a *credible* project. Most candidates skip it, which is precisely why doing it is disproportionately convincing.
 
-### - [ ] T7.1 — Scale up model-based testing
+### - [x] T7.1 — Scale up model-based testing
+
+> **Closed.** The framework was already in place -- `test/model/distribution.go` (uniform, Zipfian, sequential, adversarial common-prefix), `test/model/generate.go` (weighted structural operations, deliberate rotation and compaction), `test/model/soak.go` (the long-run driver) and the delta-debugging shrinker. What was missing was the run itself. `go test ./test/model -run TestModelSoak -model.ops=10000000 -timeout=40m` completed 10,000,000 operations against the real `engine.LSM` with **zero divergence** in 25m14s, sustaining 6,600 ops/s once the tree reached steady depth (throughput fell from the 100k-op sample's ~9,200 ops/s as memtables, SSTable count and compaction work grew with the dataset -- expected LSM behaviour, not a regression). `TestInjectedBugIsCaughtAndShrunk` catches `resurrectingSystem`'s injected tombstone-resurrection bug and shrinks it from 120 operations to 4: `PUT key-0005, DEL key-0005, COMPACT, SCAN`, well under the 20-operation bar, with the minimal sequence confirmed to still contain the delete/compaction pair that causes it.
 
 **Effort:** 4–5 h · **Model:** Sonnet 5 for generators, Fable 5 for shrinking strategy
 

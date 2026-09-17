@@ -611,7 +611,11 @@ Fragmentation exists for one reason: to bound the blast radius of a torn write. 
 
 ### - [ ] T2.2 — Implement sync policies and group commit
 
-> **Coordinator done, not wired.** `internal/wal/policy.go` and `internal/wal/syncer.go`: all three policies, the leader-follower handoff, and the interval timer. Measured at **16.8× median speedup** with 32 writers against 1 (docs/benchmarks.md), past the 5× bar. The falsely-signalled-writer test exists and was verified by mutation — injecting the bug (reading the offset after the sync instead of capturing it before) makes it fail with named offsets. The syncer coordinates a `Syncable`, which the T2.1 writer satisfies; until then nothing calls it on the write path, so this stays unticked.
+> **Wired, unverified.** `internal/wal/policy.go` and `internal/wal/syncer.go`: all three policies, the leader-follower handoff, and the interval timer. Measured at **16.8× median speedup** with 32 writers against 1 (docs/benchmarks.md), past the 5× bar. The falsely-signalled-writer test exists and was verified by mutation — injecting the bug (reading the offset after the sync instead of capturing it before) makes it fail with named offsets.
+>
+> `internal/engine/rotation.go`'s `memtableSet.Add` now binds a `wal.Syncer` to each slot (`openSlot`) and calls `AwaitDurable` after releasing `mu`, instead of syncing inside the write lock — this is the change the T7.4 stress profile and `docs/concurrency.md`'s "Known gap" section were waiting on. Releasing the lock around the fsync reopens the hazard that section predicted: a slot can rotate onto the immutable queue and reach the flusher while a writer is still mid-fsync against its WAL file, and `Discard`/`Close` must not close that fd out from under the fsync. Addressed with a per-slot `sync.WaitGroup` (`slot.inflight`): `Add` registers on it before releasing `mu` and `Discard`/`Close` wait on it before calling `wal.Writer.Close`.
+>
+> **Not run.** `go build ./...` and `go vet ./...` are clean; the package test suite, `-race`, and the 32-client throughput benchmark have deliberately not been run against this change (explicit instruction, this session). The done-when conditions (5× throughput, the falsely-signalled-writer test, plus `-race` on the new lock-release ordering and the new `slot.inflight` interlock) are unverified. Stays unticked until they are.
 
 **Effort:** 3–4 h · **Model:** Opus 5 — the coordination logic is the interesting part
 
@@ -641,7 +645,11 @@ The judgement call is the failure taxonomy. A truncated *trailing* record is exp
 
 ### - [ ] T2.4 — Build the crash-testing harness
 
-> **Built, gated.** `test/crash/` holds the harness: process supervision with SIGKILL, the acknowledgement recorder, the verifier, and the `STRATA_CRASH_AT` fault injection points for every phase through 6. Two self-tests run unconditionally and prove the plumbing drives a real server. The 100-iteration durability test is written and skips behind `STRATA_DURABLE`, because the map engine legitimately loses everything on restart; setting the variable today makes it fail with the exact missing keys, which is the behaviour Phase 3 needs. Stays unticked until it runs green against a durable engine as a CI job.
+> **Built, gated.** `test/crash/` holds the harness: process supervision with SIGKILL, the acknowledgement recorder, the verifier, and the `STRATA_CRASH_AT`/`STRATA_CRASH_AFTER_N` contract. Two self-tests run unconditionally and prove the plumbing drives a real server. The 100-iteration durability test is written and skips behind `STRATA_DURABLE`, because the map engine legitimately loses everything on restart; setting the variable today makes it fail with the exact missing keys, which is the behaviour Phase 3 needs. Stays unticked until it runs green against a durable engine as a CI job.
+>
+> **Correction to the previous version of this note:** it claimed the fault injection points existed "for every phase through 6." They did not — `STRATA_CRASH_AT` was defined as a constant and passed to the server's environment by `test/crash/harness.go`, but nothing in `cmd/strata-server` or `internal/engine` ever read it, so every `KillPoint` beyond a random-timing kill was a no-op the harness could arm but the server would ignore. `cmd/strata-server/main.go` now reads both env vars and builds a counting abort hook (`crashHook`), wired through a new `engine.Options.CrashHook func(point string) error` into `memtableSet.Add` (`after_wal_write`, `after_wal_sync`) and `Flusher.step` (`during_flush`, at `StepAfterTableSync`). `before_manifest_sync`/`after_manifest_sync` (T6.3's compaction points) remain unwired — out of scope for this pass; T6.3 already shipped its own in-process fault-injection tests for that path and did not depend on this mechanism.
+>
+> **Not run.** This wiring, and the new `TestFlushWindowSurvivesKill` test it enables (see T3.5), have not been executed. `go build ./...` and `go vet ./...` are clean.
 
 **Effort:** 4–6 h · **Model:** Sonnet 5 for the harness, Fable 5 to design the verification predicate
 
@@ -728,7 +736,11 @@ The directory fsync is not optional and is widely missed. A file creation is not
 >
 > The ordering is proven by a deterministic fault-injection hook rather than by argument. `TestWALSurvivesUntilTheManifestCommits` stops the flush between the SSTable fsync and the manifest fsync and asserts the WAL is still on disk; it was mutation-tested by moving the retire into that window, which fails it by name. Table-count, readability and flat-memory clauses are covered by `TestFlushProducesOneTablePerMemtable`, `TestFlushedDataIsReadableAfterReplay` and `TestFlushMemoryStaysFlat` — the ratio and memory tests run at a size the suite can afford rather than at 1 GB, and say so.
 >
-> **Unticked on the fourth clause: "50 kills targeted at the flush window lose nothing."** `cmd/strata-server/main.go` now opens the durable `engine.LSM` (`engine.Open`) instead of `engine.NewMemory()`, wiring in the WAL, flusher, manifest and compactor behind the same `Engine` interface — the server is durable end to end, and `kill -9` followed by a restart was verified by hand to recover written keys. What is still missing is `test/crash`'s automated 50-iteration sweep targeted at `KillPointDuringFlush` against this real server process; that is the remaining test work, deferred per the current instruction to prioritise functionality over tests.
+> **Unticked on the fourth clause: "50 kills targeted at the flush window lose nothing."** `cmd/strata-server/main.go` now opens the durable `engine.LSM` (`engine.Open`) instead of `engine.NewMemory()`, wiring in the WAL, flusher, manifest and compactor behind the same `Engine` interface — the server is durable end to end, and `kill -9` followed by a restart was verified by hand to recover written keys.
+>
+> `test/crash/crash_test.go` now has `TestFlushWindowSurvivesKill`: 50 iterations, each arming `KillPointDuringFlush` directly (via `cmd/strata-server`'s new `STRATA_CRASH_AT` wiring, T2.4) rather than relying on random timing, against a server started with a new `-memtable-bytes` override (16 KiB) so a flush actually happens within a short run instead of needing tens of thousands of small writes to cross the real 4 MB default. The kill lands on a varying occurrence count per iteration so it hits different flushes across the run rather than always the first.
+>
+> **Not run.** This test, and the `crashHook`/`CrashHook` wiring it depends on, have not been executed against this change — no `go test`, no `-race`. `go build ./...` and `go vet ./...` are clean. Stays unticked until the sweep is actually run and passes.
 
 **Effort:** 4–6 h · **Model:** Opus 5 for the ordering constraints
 
@@ -1199,6 +1211,10 @@ Specifically ask Opus 5 to review the code an interviewer will most likely open 
 ---
 
 ### - [ ] T9.3 — Complete release engineering
+
+> **Partial: local artifacts built, nothing published or tagged.** `Dockerfile` is a multi-stage build (`golang:1.26` builder, `gcr.io/distroless/static-debian12:nonroot` final stage, `CGO_ENABLED=0` -- no cgo use anywhere in the module) with `/data` as a declared `VOLUME` per this task's own trap. `make dist` cross-compiles static release binaries for linux/amd64 and linux/arm64 into `bin/dist/`; both ran clean and produced statically linked ELF binaries. `CHANGELOG.md` describes what ships in 0.1.0, including this session's own unverified changes rather than hiding them.
+>
+> **Not done:** `docker build` has never been run, so the image is unverified even to build, let alone the actual done-when condition (`docker run` starting a server `redis-cli` connects to). No tag was created -- tagging v0.1.0 while T2.2/T2.4/T3.5 are unticked and unverified (see their own notes) would claim a release milestone the durability work hasn't earned yet; create it once those are verified. Nothing has been published to GHCR, and CLAUDE.md forbids pushing to any remote regardless.
 
 **Effort:** 2–3 h · **Model:** Haiku 4.5
 

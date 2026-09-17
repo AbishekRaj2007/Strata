@@ -66,6 +66,16 @@ type Flusher struct {
 	// exists for tests that need to stop the flush at an exact instant.
 	onStep func(flushStep) error
 
+	// crashHook, when non-nil, is called by name at StepAfterTableSync --
+	// the "aborts partway through" window test/crash's KillPointDuringFlush
+	// names: the SSTable is durable but nothing yet references it, so a
+	// crash here must lose nothing because the WAL still protects the data.
+	// Kept separate from onStep, which is untyped-string-averse by design
+	// (its callers are in this package and use flushStep directly): a
+	// second field lets cmd/strata-server, in a different package, supply a
+	// hook without needing access to the unexported flushStep type.
+	crashHook func(point string) error
+
 	trigger chan struct{}
 	quit    chan struct{}
 	wg      sync.WaitGroup
@@ -138,6 +148,12 @@ func (f *Flusher) SetOnFlush(fn func()) {
 // must be called before Start.
 func (f *Flusher) SetOnError(fn func(error)) {
 	f.onError = fn
+}
+
+// SetCrashHook registers a named crash-point hook for process-level fault
+// injection (STRATA_CRASH_AT=during_flush). It must be called before Start.
+func (f *Flusher) SetCrashHook(fn func(point string) error) {
+	f.crashHook = fn
 }
 
 // SetTableOptions selects the build parameters for the tables this flusher
@@ -404,6 +420,11 @@ func (f *Flusher) retire(sl *slot) error {
 }
 
 func (f *Flusher) step(s flushStep) error {
+	if s == StepAfterTableSync && f.crashHook != nil {
+		if err := f.crashHook("during_flush"); err != nil {
+			return err
+		}
+	}
 	if f.onStep == nil {
 		return nil
 	}

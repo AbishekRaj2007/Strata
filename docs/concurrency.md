@@ -30,6 +30,16 @@ active simultaneously.
 
 **`memtableSet`** (`rotation.go`) — `mu sync.RWMutex`, `cond *sync.Cond`.
 
+> **Update, unverified by this document's own audit.** The paragraph below
+> described the state T7.4 actually audited (fsync inside the lock). A later
+> change moved the fsync outside `mu` to wire T2.2's group commit onto the
+> write path; that change is described in the "Known gap" section below,
+> which now describes what changed rather than a gap. This file's own
+> preamble says code wins over description when they differ — treat the
+> `Add`/`Discard`/`Close` claims in this entry as pre-change until the
+> commands at the top of this file have actually been run against the new
+> code.
+
 Guards the active memtable slot, the immutable queue, the sequence counter,
 and stall accounting. `Add` (the whole write path: rotation check, sequence
 assignment, WAL append, the conditional fsync under `SyncAlways`, and the
@@ -155,12 +165,12 @@ silently wrong answer instead of a checksum error.
 **`Syncer`** (`syncer.go`) — `mu sync.Mutex` + `cond *sync.Cond` guard
 `syncing`, `synced`, `generation`, `closed`, `syncErr`, and the throughput
 counters. Fully built, unit-tested (including the falsely-signalled-writer
-regression test T2.2's trap calls for), and **not currently on the live
-write path** — `memtableSet.Add` fsyncs directly rather than through a
-`Syncer` today; see the contention finding above. Documenting it here
-rather than omitting it is deliberate: a concurrency document that only
-lists what is wired in would miss the most interesting piece of built,
-tested, unused synchronization in the codebase.
+regression test T2.2's trap calls for). As of the change described in
+"Known gap" below, one `Syncer` is now bound per slot (`memtableSet.openSlot`)
+and `memtableSet.Add` calls `AwaitDurable` on it after releasing `mu`,
+instead of syncing inside the write lock. That wiring has not yet been
+exercised by this document's own audit commands — see the `memtableSet`
+entry above.
 
 ### `internal/memtable`
 
@@ -204,14 +214,22 @@ exact match. A growth past that tolerance is what a leaked goroutine or file
 descriptor looks like; the same run under `-race` is what a genuine data
 race looks like.
 
-## Known gap
+## Known gap (now: recent change, unverified)
 
-Group commit (T2.2) is unwired, as stated above: every writer under
-`SyncAlways` pays a full fsync inside `memtableSet.mu`, and the stress
-run's own profile is the evidence. This is a documented performance
-limitation, not a correctness one — the current design's single lock is
-exactly what keeps the WAL-order and flush-eligibility invariants trivially
-true. Wiring the syncer in without a per-slot quiescence mechanism would
-reopen a window where the flusher could serialize a memtable to an SSTable
-before a concurrently-committing write has landed in it, which is a
-real correctness regression, not a hypothetical one.
+This section used to state that group commit (T2.2) was unwired: every
+writer under `SyncAlways` paid a full fsync inside `memtableSet.mu`, per the
+T7.4 stress profile. That has since changed in `internal/engine/rotation.go`:
+`Add` now inserts into the memtable and releases `mu` *before* calling
+`AwaitDurable` on the slot's `wal.Syncer`, so concurrent writers can queue
+behind one fsync instead of one-per-write.
+
+This section also predicted the exact correctness hazard that reopens:
+wiring the syncer without a **per-slot quiescence mechanism** would let the
+flusher serialize a memtable to an SSTable, commit the manifest, and close
+its WAL file while a writer that targeted that slot is still mid-fsync
+against it. The change adds that mechanism — `slot.inflight
+sync.WaitGroup`, incremented by `Add` before it releases `mu` and drained by
+`Discard` and `Close` before either calls `wal.Writer.Close` on the slot's
+file — but it has not been exercised by this document's own audit commands
+(top of file) or by `-race`. Until it has, treat this as a plausible fix
+described by the person who made it, not as an audited invariant.

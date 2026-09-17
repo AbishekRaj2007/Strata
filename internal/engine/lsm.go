@@ -64,6 +64,16 @@ type Options struct {
 	// can fail one engine's I/O without touching another's, which is what
 	// lets the sweep run its cases in the same process.
 	FS vfs.FS
+
+	// CrashHook, when non-nil, is called by name at the process-level fault
+	// injection points test/crash's harness drives via STRATA_CRASH_AT:
+	// "after_wal_write", "after_wal_sync", and "during_flush" (T2.4, T3.5).
+	// An error returned here aborts the operation in progress; the intended
+	// use is cmd/strata-server calling os.Exit from inside the hook to
+	// simulate a crash at an exact point rather than a random instant. Nil
+	// is a no-op, which is what every caller other than cmd/strata-server
+	// wants.
+	CrashHook func(point string) error
 }
 
 // LSM is the durable storage engine: memtables in front of a WAL, flushed
@@ -206,6 +216,7 @@ func Open(opts Options) (*LSM, error) {
 		SyncPolicy:     opts.SyncPolicy,
 		FirstSequence:  highest,
 		FS:             fsys,
+		CrashHook:      opts.CrashHook,
 	})
 	if err != nil {
 		_ = log.Close()
@@ -234,6 +245,9 @@ func Open(opts Options) (*LSM, error) {
 	e.flusher = NewFlusher(set, opts.Dir, log, vs)
 	e.flusher.SetBlockCache(blocks)
 	e.flusher.SetTableOptions(tableOpts)
+	if opts.CrashHook != nil {
+		e.flusher.SetCrashHook(opts.CrashHook)
+	}
 
 	// Compaction shares the flusher's table parameters, so a file's read
 	// cost does not depend on which of them produced it, and the same block

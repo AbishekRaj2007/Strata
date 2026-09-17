@@ -9,6 +9,8 @@ import (
 	"net/http"
 	"os"
 	"os/signal"
+	"strconv"
+	"sync/atomic"
 	"syscall"
 	"time"
 
@@ -20,6 +22,46 @@ import (
 	"github.com/AbishekRaj2007/Strata/internal/wal"
 )
 
+// The environment variables test/crash's harness sets to arm fault
+// injection (T2.4). Duplicated here rather than imported: test/crash is a
+// test-only package and this binary must not depend on it.
+const (
+	envCrashAt    = "STRATA_CRASH_AT"
+	envCrashAfter = "STRATA_CRASH_AFTER_N"
+)
+
+// crashHook builds engine.Options.CrashHook from the environment. It aborts
+// the process, uncleanly and by name, the Nth time the named point is
+// reached -- "uncleanly" is the point: a graceful exit would flush and close
+// exactly the state a crash test needs to catch unflushed and unclosed.
+//
+// Returns nil when STRATA_CRASH_AT is unset or empty, which is every normal
+// run: the hook is then never installed and Add/FlushOldest never pay the
+// cost of checking it.
+func crashHook() func(point string) error {
+	at := os.Getenv(envCrashAt)
+	if at == "" {
+		return nil
+	}
+	after, _ := strconv.Atoi(os.Getenv(envCrashAfter))
+
+	var count atomic.Int64
+	return func(point string) error {
+		if point != at {
+			return nil
+		}
+		if count.Add(1) < int64(after) {
+			return nil
+		}
+		// os.Exit skips every deferred cleanup -- no WAL sync, no manifest
+		// flush, no graceful anything -- which is what makes this a stand-in
+		// for a real kill rather than a clean shutdown that happens to be
+		// early.
+		os.Exit(137)
+		return nil // unreachable; satisfies the func(string) error signature
+	}
+}
+
 // version is stamped at build time via -ldflags.
 var version = "dev"
 
@@ -28,14 +70,15 @@ var version = "dev"
 const shutdownTimeout = 30 * time.Second
 
 type config struct {
-	addr        string
-	dataDir     string
-	syncPolicy  string
-	memtableMB  int
-	cacheMB     int
-	logLevel    string
-	pprofAddr   string
-	showVersion bool
+	addr          string
+	dataDir       string
+	syncPolicy    string
+	memtableMB    int
+	memtableBytes int
+	cacheMB       int
+	logLevel      string
+	pprofAddr     string
+	showVersion   bool
 }
 
 func parseFlags(args []string, stderr *os.File) (config, error) {
@@ -48,6 +91,7 @@ func parseFlags(args []string, stderr *os.File) (config, error) {
 	fs.StringVar(&c.dataDir, "data-dir", "./data", "directory holding WAL, SSTables, and manifest")
 	fs.StringVar(&c.syncPolicy, "sync", "interval", "WAL sync policy: always, interval, or never")
 	fs.IntVar(&c.memtableMB, "memtable-mb", 4, "memtable size threshold in megabytes")
+	fs.IntVar(&c.memtableBytes, "memtable-bytes", 0, "memtable size threshold in bytes; overrides -memtable-mb when positive (test use, e.g. test/crash forcing flushes on a short run)")
 	fs.IntVar(&c.cacheMB, "cache-mb", 64, "block cache capacity in megabytes")
 	fs.StringVar(&c.logLevel, "log-level", log.LevelInfo, "log level: debug, info, warn, or error")
 	fs.StringVar(&c.pprofAddr, "pprof-addr", "", "serve pprof on this address; empty disables it")
@@ -71,7 +115,19 @@ func (c config) validate() error {
 	if c.cacheMB < 0 {
 		return fmt.Errorf("invalid -cache-mb %d: want zero or more", c.cacheMB)
 	}
+	if c.memtableBytes < 0 {
+		return fmt.Errorf("invalid -memtable-bytes %d: want zero or more", c.memtableBytes)
+	}
 	return nil
+}
+
+// threshold resolves the configured memtable size in bytes, applying the
+// -memtable-bytes override when set.
+func (c config) threshold() int {
+	if c.memtableBytes > 0 {
+		return c.memtableBytes
+	}
+	return c.memtableMB << 20
 }
 
 func main() {
@@ -129,10 +185,11 @@ func run(cfg config) error {
 
 	eng, err := engine.Open(engine.Options{
 		Dir:             cfg.dataDir,
-		Threshold:       cfg.memtableMB << 20,
+		Threshold:       cfg.threshold(),
 		SyncPolicy:      policy,
 		BlockCacheBytes: int64(cfg.cacheMB) << 20,
 		Logger:          logger,
+		CrashHook:       crashHook(),
 	})
 	if err != nil {
 		return fmt.Errorf("open engine: %w", err)

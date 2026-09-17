@@ -8,6 +8,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strconv"
 	"syscall"
 	"time"
 )
@@ -81,6 +82,12 @@ type ServerConfig struct {
 	// is reached, which is how a crash lands mid-workload rather than on the
 	// first write.
 	KillAfterN int
+
+	// MemtableBytes, if non-zero, is passed as -memtable-bytes.
+	// KillPointDuringFlush needs flushes to actually happen inside a short
+	// test run, which the server's 4 MB default does not reliably do against
+	// the workload's small values.
+	MemtableBytes int
 }
 
 // Server is a running strata-server subprocess under test.
@@ -99,11 +106,15 @@ func StartServer(ctx context.Context, cfg ServerConfig) (*Server, error) {
 	}
 	addr := fmt.Sprintf("127.0.0.1:%d", port)
 
-	cmd := exec.CommandContext(ctx, cfg.Binary,
+	args := []string{
 		"-addr", addr,
 		"-data-dir", cfg.DataDir,
 		"-sync", cfg.SyncPolicy,
-	)
+	}
+	if cfg.MemtableBytes > 0 {
+		args = append(args, "-memtable-bytes", strconv.Itoa(cfg.MemtableBytes))
+	}
+	cmd := exec.CommandContext(ctx, cfg.Binary, args...)
 	cmd.Env = append(os.Environ(),
 		fmt.Sprintf("%s=%s", EnvCrashAt, cfg.KillAt),
 		fmt.Sprintf("%s=%d", EnvCrashAfter, cfg.KillAfterN),

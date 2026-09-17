@@ -1212,6 +1212,10 @@ Specifically ask Opus 5 to review the code an interviewer will most likely open 
 
 ### - [ ] T9.3 — Complete release engineering
 
+> **Partial: local artifacts built, nothing published or tagged.** `Dockerfile` is a multi-stage build (`golang:1.26` builder, `gcr.io/distroless/static-debian12:nonroot` final stage, `CGO_ENABLED=0` -- no cgo use anywhere in the module) with `/data` as a declared `VOLUME` per this task's own trap. `make dist` cross-compiles static release binaries for linux/amd64 and linux/arm64 into `bin/dist/`; both ran clean and produced statically linked ELF binaries. `CHANGELOG.md` describes what ships in 0.1.0, including this session's own unverified changes rather than hiding them.
+>
+> **Not done:** `docker build` has never been run, so the image is unverified even to build, let alone the actual done-when condition (`docker run` starting a server `redis-cli` connects to). No tag was created -- tagging v0.1.0 while T2.2/T2.4/T3.5 are unticked and unverified (see their own notes) would claim a release milestone the durability work hasn't earned yet; create it once those are verified. Nothing has been published to GHCR, and CLAUDE.md forbids pushing to any remote regardless.
+
 **Effort:** 2–3 h · **Model:** Haiku 4.5
 
 Tag v0.1.0, build binaries for linux/amd64 and linux/arm64, write a multi-stage Dockerfile producing a small final image, publish to GitHub Container Registry, and write a CHANGELOG describing what actually ships.

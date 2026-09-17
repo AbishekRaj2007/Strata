@@ -64,6 +64,12 @@ type RotationConfig struct {
 	// sequence numbers continue past everything the replayed WAL contained
 	// rather than restarting and colliding with it.
 	FirstSequence uint64
+
+	// CrashHook, when non-nil, is called by name at "after_wal_write" (the
+	// record has reached the WAL file but not yet been fsynced) and
+	// "after_wal_sync" (the fsync has returned) -- the two WAL-side points
+	// test/crash's harness drives via STRATA_CRASH_AT (T2.4).
+	CrashHook func(point string) error
 }
 
 // slot pairs a memtable with the WAL that protects it.
@@ -233,6 +239,13 @@ func (s *memtableSet) Add(key, value []byte, tombstone bool) (seq uint64, endOff
 		return 0, 0, fmt.Errorf("rotation: wal append: %w", err)
 	}
 
+	if s.cfg.CrashHook != nil {
+		if err := s.cfg.CrashHook("after_wal_write"); err != nil {
+			s.mu.Unlock()
+			return 0, 0, err
+		}
+	}
+
 	// The record is on the OS now; its sequence number is consumed whether or
 	// not the fsync below succeeds, and inserting it into the memtable here
 	// (rather than after the fsync) is what lets the fsync itself move
@@ -263,6 +276,12 @@ func (s *memtableSet) Add(key, value []byte, tombstone bool) (seq uint64, endOff
 	// call is unconditional; the policy check lives in exactly one place.
 	if err := active.syncer.AwaitDurable(endOffset); err != nil {
 		return 0, 0, fmt.Errorf("rotation: wal sync: %w", err)
+	}
+
+	if s.cfg.CrashHook != nil {
+		if err := s.cfg.CrashHook("after_wal_sync"); err != nil {
+			return 0, 0, err
+		}
 	}
 
 	return seq, endOffset, nil

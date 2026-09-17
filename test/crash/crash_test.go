@@ -235,6 +235,85 @@ func restartAndVerify(t *testing.T, iter int, bin, dataDir string, want map[stri
 	return problems
 }
 
+// TestFlushWindowSurvivesKill is T3.5's remaining done-when clause: 50 kills
+// targeted at the flush window lose nothing. Unlike TestAcknowledgedWritesSurviveKill's
+// randomised timing, this arms KillPointDuringFlush directly, so every
+// iteration actually lands inside a flush rather than merely being likely to
+// -- the same reasoning TestTargetedKillPoints already applies to the WAL
+// points, extended here to run enough iterations to satisfy T3.5's "50
+// kills" condition rather than TestTargetedKillPoints' one-shot check.
+//
+// A small -memtable-bytes threshold is what makes this practical: the
+// workload's values are a few dozen bytes, so the server's real 4 MB default
+// would need tens of thousands of writes per iteration to rotate even once.
+func TestFlushWindowSurvivesKill(t *testing.T) {
+	requireDurableEngine(t)
+
+	if testing.Short() {
+		t.Skip("crash iterations are slow; skipped under -short")
+	}
+
+	const iterations = 50
+	bin := buildServer(t)
+
+	for i := 0; i < iterations; i++ {
+		dataDir := filepath.Join(t.TempDir(), "data")
+		if err := os.MkdirAll(dataDir, 0o755); err != nil {
+			t.Fatalf("iteration %d: mkdir: %v", i, err)
+		}
+
+		ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
+
+		rng := rand.New(rand.NewSource(int64(i)))
+		// Varying the occurrence count spreads the kill across different
+		// flushes within the run -- the first, a middle one, a late one --
+		// rather than always the same one.
+		killAfter := 1 + rng.Intn(20)
+
+		s, err := StartServer(ctx, ServerConfig{
+			Binary:        bin,
+			DataDir:       dataDir,
+			SyncPolicy:    "always",
+			MemtableBytes: 16 * 1024,
+			KillAt:        KillPointDuringFlush,
+			KillAfterN:    killAfter,
+		})
+		if err != nil {
+			cancel()
+			t.Fatalf("iteration %d: start: %v", i, err)
+		}
+
+		stop := make(chan struct{})
+		done := make(chan *Acked, 1)
+		go func() {
+			done <- RunWorkload(WorkloadConfig{
+				Addr:    s.Addr(),
+				Clients: 8,
+				Rand:    rand.New(rand.NewSource(int64(i))),
+			}, stop)
+		}()
+
+		// The server aborts itself via os.Exit at the injected point rather
+		// than waiting for a signal, so Wait is what observes the "kill".
+		_ = s.Wait()
+		close(stop)
+		acked := <-done
+		cancel()
+
+		if acked.Len() == 0 {
+			t.Fatalf("iteration %d: no writes acknowledged before the flush kill", i)
+		}
+
+		problems := restartAndVerify(t, i, bin, dataDir, acked.Snapshot())
+		for _, p := range problems {
+			t.Errorf("iteration %d: %s", i, p)
+		}
+		if t.Failed() {
+			t.Fatalf("iteration %d: durability violated at the flush window; stopping rather than repeating the failure", i)
+		}
+	}
+}
+
 // TestTargetedKillPoints exercises the fault injection hook at each named
 // point. The points beyond the WAL ones are inert until the phases that
 // introduce them, so this test grows as those land rather than being rewritten.

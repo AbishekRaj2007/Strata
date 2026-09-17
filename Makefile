@@ -18,6 +18,26 @@ build: ## Build the server and dev CLI into bin/
 	go build -ldflags "$(LDFLAGS)" -o $(BIN_DIR)/strata-server ./cmd/strata-server
 	go build -ldflags "$(LDFLAGS)" -o $(BIN_DIR)/strata-cli ./cmd/strata-cli
 
+# T9.3's release targets. linux/amd64 and linux/arm64 only, per CLAUDE.md
+# §8 ("Do not add Windows compatibility layers") and plan.md's "Linux only".
+DIST_DIR := $(BIN_DIR)/dist
+DIST_PLATFORMS := linux/amd64 linux/arm64
+
+.PHONY: dist
+dist: ## Cross-compile static release binaries for linux/amd64 and linux/arm64 into bin/dist/
+	@for p in $(DIST_PLATFORMS); do \
+		os=$${p%/*}; arch=$${p#*/}; \
+		out=$(DIST_DIR)/$$os-$$arch; \
+		echo "building $$out/strata-server, $$out/strata-cli"; \
+		mkdir -p $$out; \
+		CGO_ENABLED=0 GOOS=$$os GOARCH=$$arch go build -ldflags "$(LDFLAGS)" -o $$out/strata-server ./cmd/strata-server || exit 1; \
+		CGO_ENABLED=0 GOOS=$$os GOARCH=$$arch go build -ldflags "$(LDFLAGS)" -o $$out/strata-cli ./cmd/strata-cli || exit 1; \
+	done
+
+.PHONY: docker-build
+docker-build: ## Build the strata-server Docker image tagged with the current version
+	docker build --build-arg VERSION=$(VERSION) -t strata-server:$(VERSION) .
+
 .PHONY: test
 test: ## Run all tests
 	go test ./...

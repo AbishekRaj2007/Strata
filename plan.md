@@ -611,7 +611,11 @@ Fragmentation exists for one reason: to bound the blast radius of a torn write. 
 
 ### - [ ] T2.2 — Implement sync policies and group commit
 
-> **Coordinator done, not wired.** `internal/wal/policy.go` and `internal/wal/syncer.go`: all three policies, the leader-follower handoff, and the interval timer. Measured at **16.8× median speedup** with 32 writers against 1 (docs/benchmarks.md), past the 5× bar. The falsely-signalled-writer test exists and was verified by mutation — injecting the bug (reading the offset after the sync instead of capturing it before) makes it fail with named offsets. The syncer coordinates a `Syncable`, which the T2.1 writer satisfies; until then nothing calls it on the write path, so this stays unticked.
+> **Wired, unverified.** `internal/wal/policy.go` and `internal/wal/syncer.go`: all three policies, the leader-follower handoff, and the interval timer. Measured at **16.8× median speedup** with 32 writers against 1 (docs/benchmarks.md), past the 5× bar. The falsely-signalled-writer test exists and was verified by mutation — injecting the bug (reading the offset after the sync instead of capturing it before) makes it fail with named offsets.
+>
+> `internal/engine/rotation.go`'s `memtableSet.Add` now binds a `wal.Syncer` to each slot (`openSlot`) and calls `AwaitDurable` after releasing `mu`, instead of syncing inside the write lock — this is the change the T7.4 stress profile and `docs/concurrency.md`'s "Known gap" section were waiting on. Releasing the lock around the fsync reopens the hazard that section predicted: a slot can rotate onto the immutable queue and reach the flusher while a writer is still mid-fsync against its WAL file, and `Discard`/`Close` must not close that fd out from under the fsync. Addressed with a per-slot `sync.WaitGroup` (`slot.inflight`): `Add` registers on it before releasing `mu` and `Discard`/`Close` wait on it before calling `wal.Writer.Close`.
+>
+> **Not run.** `go build ./...` and `go vet ./...` are clean; the package test suite, `-race`, and the 32-client throughput benchmark have deliberately not been run against this change (explicit instruction, this session). The done-when conditions (5× throughput, the falsely-signalled-writer test, plus `-race` on the new lock-release ordering and the new `slot.inflight` interlock) are unverified. Stays unticked until they are.
 
 **Effort:** 3–4 h · **Model:** Opus 5 — the coordination logic is the interesting part
 

@@ -48,11 +48,12 @@ type RotationConfig struct {
 	// kill -9; under the other policies durability is the IntervalSyncer's
 	// business and Add only guarantees the bytes reached the OS.
 	//
-	// The fsync happens inside Add's critical section rather than through a
-	// wal.Syncer, because rotation swaps the WAL writer underneath and a
-	// syncer bound to one writer would fsync the wrong file after a
-	// rotation. That costs the group-commit batching T2.2 exists to provide;
-	// reinstating it here is T2.2's job, not this file's.
+	// The fsync itself runs through a per-slot wal.Syncer (T2.2), called
+	// after mu is released, so concurrent writers queue behind one fsync
+	// instead of serialising one-per-write. The syncer is bound to the slot
+	// rather than the memtableSet because rotation swaps the active slot:
+	// binding it once, in openSlot, means a writer that captured its slot
+	// before a concurrent rotation still awaits the correct file's syncer.
 	SyncPolicy wal.SyncPolicy
 
 	// FS is the filesystem WAL files are created and fsynced through. Nil
@@ -74,8 +75,18 @@ type RotationConfig struct {
 type slot struct {
 	table  memtable.Memtable
 	wal    *wal.Writer
+	syncer *wal.Syncer
 	file   vfs.File
 	number uint64
+
+	// inflight counts writers that have captured this slot as the target of
+	// an Add and may still be awaiting fsync durability after mu is
+	// released. A slot can rotate onto the immutable queue and reach the
+	// flusher while such a writer is still mid-fsync against its WAL file;
+	// Close and Discard must wait for this to drain before closing that
+	// file, or a concurrent Close of the fd could hit an in-flight Sync
+	// syscall on it.
+	inflight sync.WaitGroup
 }
 
 // memtableSet holds the active memtable and the queue of immutable memtables
@@ -158,7 +169,8 @@ func (s *memtableSet) openSlot() (*slot, error) {
 		return nil, err
 	}
 
-	return &slot{table: s.cfg.New(), wal: wal.NewWriter(f), file: f, number: number}, nil
+	w := wal.NewWriter(f)
+	return &slot{table: s.cfg.New(), wal: w, syncer: wal.NewSyncer(w, s.cfg.SyncPolicy), file: f, number: number}, nil
 }
 
 // syncDir fsyncs a directory so that entries created in it are durable.
@@ -179,9 +191,9 @@ func syncDir(fsys vfs.FS, dir string) error {
 // offset to it.
 func (s *memtableSet) Add(key, value []byte, tombstone bool) (seq uint64, endOffset int64, err error) {
 	s.mu.Lock()
-	defer s.mu.Unlock()
 
 	if s.closed {
+		s.mu.Unlock()
 		return 0, 0, ErrClosed
 	}
 
@@ -190,9 +202,18 @@ func (s *memtableSet) Add(key, value []byte, tombstone bool) (seq uint64, endOff
 	// one that is already over budget.
 	if s.active.table.ApproxSize() >= s.cfg.Threshold {
 		if err := s.rotateLocked(); err != nil {
+			s.mu.Unlock()
 			return 0, 0, err
 		}
 	}
+
+	active := s.active
+	// Registered while still holding mu, on the slot itself rather than the
+	// set: this slot can rotate onto the immutable queue and be handed to
+	// the flusher the instant mu is released below, and Discard/Close must
+	// know this writer is still using the slot's WAL file even after that.
+	active.inflight.Add(1)
+	defer active.inflight.Done()
 
 	seq = s.seq + 1
 
@@ -203,41 +224,47 @@ func (s *memtableSet) Add(key, value []byte, tombstone bool) (seq uint64, endOff
 		b.AppendSet(key, value)
 	}
 
-	mark := s.active.wal.Mark()
-
-	endOffset, err = s.active.wal.Write(b)
+	endOffset, err = active.wal.Write(b)
 	if err != nil {
 		// The sequence counter is deliberately not advanced: nothing was
 		// logged, so the number is still unused and reusing it keeps the WAL's
 		// sequences dense.
+		s.mu.Unlock()
 		return 0, 0, fmt.Errorf("rotation: wal append: %w", err)
 	}
 
-	// Under sync=always the write is not acknowledgeable until it is on the
-	// platter, so the fsync happens before the memtable insert makes it
-	// visible to readers. Returning an error here leaves nothing observable.
-	if s.cfg.SyncPolicy == wal.SyncAlways {
-		if err := s.active.wal.Sync(); err != nil {
-			// The record just written is now exactly the ambiguous case
-			// Rollback exists for: on the OS, never confirmed durable. Strip
-			// it back off so nothing later mistakes it for a write that was
-			// ever acknowledged.
-			if rerr := s.active.wal.Rollback(mark); rerr != nil {
-				return 0, 0, fmt.Errorf("rotation: wal sync: %w (rollback failed: %v)", err, rerr)
-			}
-			return 0, 0, fmt.Errorf("rotation: wal sync: %w", err)
-		}
-	}
-
+	// The record is on the OS now; its sequence number is consumed whether or
+	// not the fsync below succeeds, and inserting it into the memtable here
+	// (rather than after the fsync) is what lets the fsync itself move
+	// outside this lock. That is the point: holding mu across a fsync would
+	// serialise every writer one-per-syscall and defeat group commit, which
+	// exists precisely to let concurrent writers share one fsync.
+	//
+	// This does mean a reader can observe the value before AwaitDurable
+	// below confirms it durable. That window is safe because a fsync
+	// failure is not retried or rolled back piecemeal -- it poisons the
+	// whole engine (LSM.guard latches e.fatal on wal.ErrSyncFailed) and
+	// every operation after it is refused until restart. The process must
+	// then recover from the WAL on disk, whose truncation-tolerant reader
+	// (T2.3) already handles a tail that never made it past the page cache.
 	e := memtable.Entry{Key: key, Sequence: seq, Value: value, Tombstone: tombstone}
-	if err := s.active.table.Insert(e); err != nil {
+	if err := active.table.Insert(e); err != nil {
 		// The record is already in the WAL, so recovery will replay it. The
 		// in-memory state is now behind the log, which is not a state this
 		// process can reconcile: report it and let the caller close.
+		s.mu.Unlock()
 		return 0, 0, fmt.Errorf("rotation: memtable insert after wal append: %w", err)
 	}
 
 	s.seq = seq
+	s.mu.Unlock()
+
+	// Syncer.AwaitDurable no-ops under SyncInterval and SyncNever, so this
+	// call is unconditional; the policy check lives in exactly one place.
+	if err := active.syncer.AwaitDurable(endOffset); err != nil {
+		return 0, 0, fmt.Errorf("rotation: wal sync: %w", err)
+	}
+
 	return seq, endOffset, nil
 }
 
@@ -356,14 +383,21 @@ func (s *memtableSet) Oldest() (*slot, bool) {
 // delete the file; that is T3.5's decision to make at the right moment.
 func (s *memtableSet) Discard(sl *slot) error {
 	s.mu.Lock()
-	defer s.mu.Unlock()
 
 	if len(s.immutable) == 0 || s.immutable[0] != sl {
+		s.mu.Unlock()
 		return fmt.Errorf("rotation: discard of a memtable that is not the oldest")
 	}
 
 	s.immutable = s.immutable[1:]
 	s.cond.Broadcast()
+	s.mu.Unlock()
+
+	// A writer that captured sl as the active slot before it rotated onto
+	// this queue may still be between releasing mu and its own
+	// AwaitDurable returning; wait for it before closing the fd it is
+	// syncing.
+	sl.inflight.Wait()
 
 	return sl.wal.Close()
 }
@@ -408,16 +442,24 @@ func (s *memtableSet) Stats() RotationStats {
 // writer so it can observe the closure rather than block forever.
 func (s *memtableSet) Close() error {
 	s.mu.Lock()
-	defer s.mu.Unlock()
-
 	if s.closed {
+		s.mu.Unlock()
 		return nil
 	}
 	s.closed = true
 	s.cond.Broadcast()
+	slots := append([]*slot{s.active}, s.immutable...)
+	s.mu.Unlock()
 
+	// Once closed is true under mu, s.active can no longer change (rotation
+	// only happens inside Add/rotate, both of which check closed first), so
+	// the slots captured above are the complete, final set.
 	var firstErr error
-	for _, sl := range append([]*slot{s.active}, s.immutable...) {
+	for _, sl := range slots {
+		// Symmetric with Discard: a writer that captured this slot before
+		// Close set closed=true may still be mid-fsync against its WAL file
+		// after releasing mu, so wait for it before closing the fd.
+		sl.inflight.Wait()
 		if err := sl.wal.Close(); err != nil && firstErr == nil {
 			firstErr = err
 		}

@@ -598,6 +598,15 @@ concurrency — is consistent with that ceiling, not a separate regression.
 This is the sync=always row's target miss fully explained by profile data
 already in hand, exactly as plan.md asks for.
 
+**Superseded.** T2.2 has since wired `wal.Syncer` onto this path (`memtableSet.Add`
+now calls `AwaitDurable` after releasing `mu`, per plan.md's T2.2 note). A
+spot check with the same tool against the same disk, `sync=always`,
+unpipelined SET: 1 client 584.7 ops/sec, 32 clients 8,912.7 ops/sec — a
+15.2x speedup, so the 744 ops/sec figure above no longer reflects the
+server's behavior. This row has not been regenerated through the full
+`test/bench/full.sh` harness at 50 clients / 3 runs; that is tracked under
+T8.2/T8.3 rather than hand-edited here.
+
 ### Read workloads — high variance, explained
 
 | Workload | Throughput | p50 | p95 | p99 |

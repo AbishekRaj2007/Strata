@@ -88,6 +88,10 @@ full-bench: build ## Run T8.1's full workload suite against the durable engine
 interop: build ## Drive the server with redis-cli and go-redis (T1.3 done-when)
 	test/interop/run.sh
 
+.PHONY: crash
+crash: ## Run the 100-iteration kill/restart durability suite (T2.4 done-when)
+	STRATA_DURABLE=1 go test ./test/crash/... -v -timeout 20m
+
 .PHONY: model
 model: ## Run the per-commit model test (100k operations)
 	go test ./test/model -timeout 30m

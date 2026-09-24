@@ -645,13 +645,13 @@ The judgement call is the failure taxonomy. A truncated *trailing* record is exp
 
 ---
 
-### - [ ] T2.4 — Build the crash-testing harness
+### - [x] T2.4 — Build the crash-testing harness
 
-> **Built, gated.** `test/crash/` holds the harness: process supervision with SIGKILL, the acknowledgement recorder, the verifier, and the `STRATA_CRASH_AT`/`STRATA_CRASH_AFTER_N` contract. Two self-tests run unconditionally and prove the plumbing drives a real server. The 100-iteration durability test is written and skips behind `STRATA_DURABLE`, because the map engine legitimately loses everything on restart; setting the variable today makes it fail with the exact missing keys, which is the behaviour Phase 3 needs. Stays unticked until it runs green against a durable engine as a CI job.
+> **Built and run green.** `test/crash/` holds the harness: process supervision with SIGKILL, the acknowledgement recorder, the verifier, and the `STRATA_CRASH_AT`/`STRATA_CRASH_AFTER_N` contract. The two unconditional self-tests (`TestHarnessDrivesServer`, `TestWorkloadRecordsOnlyAcknowledgedWrites`) pass. `TestAcknowledgedWritesSurviveKill` — 100 consecutive randomised SIGKILL/restart iterations at `sync=always` against the real `engine.LSM` (`STRATA_DURABLE=1`) — passes, 53s. `TestTargetedKillPoints` (the WAL-point fault-injection hooks) and `TestFlushWindowSurvivesKill` (50 flush-window kills, T3.5's remaining clause) both pass as well.
 >
-> **Correction to the previous version of this note:** it claimed the fault injection points existed "for every phase through 6." They did not — `STRATA_CRASH_AT` was defined as a constant and passed to the server's environment by `test/crash/harness.go`, but nothing in `cmd/strata-server` or `internal/engine` ever read it, so every `KillPoint` beyond a random-timing kill was a no-op the harness could arm but the server would ignore. `cmd/strata-server/main.go` now reads both env vars and builds a counting abort hook (`crashHook`), wired through a new `engine.Options.CrashHook func(point string) error` into `memtableSet.Add` (`after_wal_write`, `after_wal_sync`) and `Flusher.step` (`during_flush`, at `StepAfterTableSync`). `before_manifest_sync`/`after_manifest_sync` (T6.3's compaction points) remain unwired — out of scope for this pass; T6.3 already shipped its own in-process fault-injection tests for that path and did not depend on this mechanism.
+> `STRATA_CRASH_AT`/`STRATA_CRASH_AFTER_N` are read by `cmd/strata-server/main.go`, which builds a counting abort hook wired through `engine.Options.CrashHook func(point string) error` into `memtableSet.Add` (`after_wal_write`, `after_wal_sync`) and `Flusher.step` (`during_flush`, at `StepAfterTableSync`). `before_manifest_sync`/`after_manifest_sync` (T6.3's compaction points) remain unwired — T6.3 already shipped its own in-process fault-injection tests for that path and does not depend on this mechanism.
 >
-> **Not run.** This wiring, and the new `TestFlushWindowSurvivesKill` test it enables (see T3.5), have not been executed. `go build ./...` and `go vet ./...` are clean.
+> **CI job added.** `make crash` (`STRATA_DURABLE=1 go test ./test/crash/... -v -timeout 20m`) and a `crash` job in `.github/workflows/ci.yml`, satisfying the "running as a CI job" clause of *Done when*.
 
 **Effort:** 4–6 h · **Model:** Sonnet 5 for the harness, Fable 5 to design the verification predicate
 

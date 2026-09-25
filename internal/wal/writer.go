@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"hash/crc32"
+	"sync/atomic"
 
 	"github.com/AbishekRaj2007/Strata/internal/vfs"
 )
@@ -32,10 +33,26 @@ type Writer struct {
 	// place at this offset as it grows.
 	blockStart int64
 
-	// offset counts every byte handed to the OS, headers included. Syncer
-	// compares waiter offsets against it to decide which writes an fsync
-	// covered, so undercounting here silently breaks durability.
+	// offset counts every byte framed so far, headers included, and drives the
+	// framing math below (blockPos, blockStart, Mark/Rollback). It advances as
+	// soon as bytes land in buf, which can be before they are handed to the OS
+	// -- so it must never be read by anything but WriteRecord itself.
 	offset int64
+
+	// published is the subset of offset that WriteAt has actually handed to
+	// the OS. It is what Offset() reports: Syncer.leadSync (T2.2) reads it
+	// from a different goroutine than the one running WriteRecord, without
+	// memtableSet's lock, so it has to be both race-free and never ahead of
+	// the file. Storing it only immediately after each successful WriteAt --
+	// never at the point offset itself advances -- is what keeps both true.
+	published atomic.Int64
+
+	// encodeBuf is reused across Write calls. WriteRecord copies every byte
+	// of its payload into buf before returning, so nothing outlives the
+	// call -- the same backing array is safe to hand to Encode again on the
+	// next Write. This is T8.3's fix for the wal.Batch.Encode allocation
+	// site T8.2's heap profile found among the top five.
+	encodeBuf []byte
 }
 
 // NewWriter frames batches into f, appending from its current end.
@@ -54,7 +71,8 @@ func NewWriter(f vfs.File) *Writer {
 // The returned offset means "these bytes are with the OS", never "these bytes
 // are durable" -- durability is the Syncer's business.
 func (w *Writer) Write(b *Batch) (int64, error) {
-	return w.WriteRecord(b.Encode(nil))
+	w.encodeBuf = b.Encode(w.encodeBuf[:0])
+	return w.WriteRecord(w.encodeBuf)
 }
 
 // WriteRecord frames one opaque payload as a single record, fragmenting it
@@ -98,6 +116,7 @@ func (w *Writer) WriteRecord(payload []byte) (int64, error) {
 				return 0, fmt.Errorf("wal: write block at %d: %w", w.blockStart, err)
 			}
 			w.offset += int64(BlockSize - w.blockPos)
+			w.published.Store(w.offset)
 			w.blockStart += BlockSize
 			w.blockPos = 0
 			avail = BlockSize
@@ -134,14 +153,18 @@ func (w *Writer) WriteRecord(payload []byte) (int64, error) {
 		w.offset, w.blockStart, w.blockPos = mark.offset, mark.blockStart, mark.blockPos
 		return 0, fmt.Errorf("wal: write block at %d: %w", w.blockStart, err)
 	}
+	w.published.Store(w.offset)
 
 	return w.offset, nil
 
 }
 
-// Offset reports how many bytes have been handed to the OS. Part of Syncable.
+// Offset reports how many bytes have been handed to the OS. Part of
+// Syncable. Safe to call from a different goroutine than the one driving
+// WriteRecord -- Syncer.leadSync does exactly that -- because it reads the
+// atomic publish point rather than the offset WriteRecord is mid-updating.
 func (w *Writer) Offset() int64 {
-	return w.offset
+	return w.published.Load()
 }
 
 // Mark snapshots the writer's position, to be restored by Rollback if the
@@ -175,6 +198,9 @@ func (w *Writer) Rollback(m Mark) error {
 		return fmt.Errorf("wal: truncate to %d: %w", m.offset, err)
 	}
 	w.offset, w.blockStart, w.blockPos = m.offset, m.blockStart, m.blockPos
+	if m.offset < w.published.Load() {
+		w.published.Store(m.offset)
+	}
 	return nil
 }
 

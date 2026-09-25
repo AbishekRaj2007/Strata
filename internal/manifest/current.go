@@ -11,8 +11,8 @@ import (
 // CurrentFile is the name of the file naming the active manifest.
 const CurrentFile = "CURRENT"
 
-// ManifestName returns the manifest filename for a file number.
-func ManifestName(number uint64) string {
+// Name returns the manifest filename for a file number.
+func Name(number uint64) string {
 	return fmt.Sprintf("MANIFEST-%06d", number)
 }
 
@@ -40,11 +40,11 @@ func WriteCurrent(fsys vfs.FS, dir, manifestName string) error {
 	}
 
 	if _, err := f.Write(content); err != nil {
-		f.Close()
+		_ = f.Close()
 		return fmt.Errorf("manifest: write %s: %w", tmp, err)
 	}
 	if err := f.Sync(); err != nil {
-		f.Close()
+		_ = f.Close()
 		return fmt.Errorf("manifest: fsync %s: %w", tmp, err)
 	}
 	if err := f.Close(); err != nil {

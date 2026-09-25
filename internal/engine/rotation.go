@@ -171,7 +171,7 @@ func (s *memtableSet) openSlot() (*slot, error) {
 	// Skipping this leaves a crash window in which the WAL protecting
 	// acknowledged writes does not exist after a restart.
 	if err := syncDir(s.cfg.FS, s.cfg.Dir); err != nil {
-		f.Close()
+		_ = f.Close()
 		return nil, err
 	}
 

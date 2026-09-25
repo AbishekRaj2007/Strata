@@ -63,19 +63,20 @@ func dial(addr string) (*client, error) {
 	return &client{conn: c, r: resp.NewReader(bufio.NewReader(c)), w: resp.NewWriter(bufio.NewWriter(c))}, nil
 }
 
-func (c *client) do(args ...string) (resp.Value, error) {
+func (c *client) do(args ...string) error {
 	if err := c.w.WriteArrayHeader(len(args)); err != nil {
-		return resp.Value{}, err
+		return err
 	}
 	for _, a := range args {
 		if err := c.w.WriteBulkString([]byte(a)); err != nil {
-			return resp.Value{}, err
+			return err
 		}
 	}
 	if err := c.w.Flush(); err != nil {
-		return resp.Value{}, err
+		return err
 	}
-	return c.r.ReadValue()
+	_, err := c.r.ReadValue()
+	return err
 }
 
 func (c *client) close() { _ = c.conn.Close() }
@@ -92,7 +93,7 @@ func runMixed(args []string) error {
 	valueSize := fs.Int("value-size", 64, "value size in bytes")
 	readFrac := fs.Float64("read-frac", 0.8, "fraction of operations that are GET rather than SET")
 	seed := fs.Int64("seed", 1, "random seed")
-	fs.Parse(args)
+	_ = fs.Parse(args) // flag.ExitOnError already exits on parse failure
 
 	// Populate the keyspace first: a GET pass against an empty database
 	// measures the miss path, and this row is meant to measure the hit path,
@@ -135,9 +136,9 @@ func runMixed(args []string) error {
 				start := time.Now()
 				var err error
 				if rng.Float64() < *readFrac {
-					_, err = c.do("GET", key)
+					err = c.do("GET", key)
 				} else {
-					_, err = c.do("SET", key, randomValue(rng, *valueSize))
+					err = c.do("SET", key, randomValue(rng, *valueSize))
 				}
 				elapsed := time.Since(start)
 				if err != nil {
@@ -190,7 +191,7 @@ func runOvertime(args []string) error {
 	keyspace := fs.Int("keyspace", 1_000_000, "distinct keys")
 	valueSize := fs.Int("value-size", 128, "value size in bytes")
 	seed := fs.Int64("seed", 1, "random seed")
-	fs.Parse(args)
+	_ = fs.Parse(args) // flag.ExitOnError already exits on parse failure
 
 	var ops atomic.Int64
 	stop := make(chan struct{})
@@ -213,7 +214,7 @@ func runOvertime(args []string) error {
 				default:
 				}
 				key := fmt.Sprintf("k%d", rng.Intn(*keyspace))
-				if _, err := c.do("SET", key, randomValue(rng, *valueSize)); err != nil {
+				if err := c.do("SET", key, randomValue(rng, *valueSize)); err != nil {
 					return
 				}
 				ops.Add(1)
@@ -253,7 +254,7 @@ func populate(addr string, keyspace, valueSize int) error {
 
 	rng := rand.New(rand.NewSource(1))
 	for i := 0; i < keyspace; i++ {
-		if _, err := c.do("SET", fmt.Sprintf("k%d", i), randomValue(rng, valueSize)); err != nil {
+		if err := c.do("SET", fmt.Sprintf("k%d", i), randomValue(rng, valueSize)); err != nil {
 			return fmt.Errorf("populate key %d: %w", i, err)
 		}
 	}

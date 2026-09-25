@@ -129,7 +129,14 @@ Run on 2026-09-11. See [the full section below](#amplification--the-three-costs-
 
 ## Optimisation log (T8.3)
 
-Not yet run. One row per change, before and after, including the optimisations that did not work.
+Run. See [docs/optimizations.md](optimizations.md) for the full before/after
+data: WAL encode-buffer reuse (5→1 allocs/op), the per-connection
+command-args slice reuse (3→0 allocs/op), and `GOGC=400` (+72% throughput,
+p99 2.6x better than default) succeeded; a RESP bulk-string buffer reuse
+failed and is documented with its root cause. See also
+[docs/gc-characterization.md](gc-characterization.md) for T8.4's GC pause /
+p99 correlation and [docs/profiles/t8.2-report.md](profiles/t8.2-report.md)
+for the profiling data that ordered this list.
 
 ## Bloom filters and block cache — the tuning study (T5.3)
 
@@ -597,6 +604,15 @@ dispatch included, at 50 concurrent clients getting no benefit from their
 concurrency — is consistent with that ceiling, not a separate regression.
 This is the sync=always row's target miss fully explained by profile data
 already in hand, exactly as plan.md asks for.
+
+**Superseded.** T2.2 has since wired `wal.Syncer` onto this path (`memtableSet.Add`
+now calls `AwaitDurable` after releasing `mu`, per plan.md's T2.2 note). A
+spot check with the same tool against the same disk, `sync=always`,
+unpipelined SET: 1 client 584.7 ops/sec, 32 clients 8,912.7 ops/sec — a
+15.2x speedup, so the 744 ops/sec figure above no longer reflects the
+server's behavior. This row has not been regenerated through the full
+`test/bench/full.sh` harness at 50 clients / 3 runs; that is tracked under
+T8.2/T8.3 rather than hand-edited here.
 
 ### Read workloads — high variance, explained
 

@@ -137,12 +137,12 @@ func TestEngineKeepsDeletesThroughCompaction(t *testing.T) {
 		key := fmt.Sprintf("key%05d", i)
 		got, err := e.Get([]byte(key))
 
-		switch {
-		case i%3 == 0:
+		switch i % 3 {
+		case 0:
 			if !errors.Is(err, ErrNotFound) {
 				t.Fatalf("deleted key %q came back as %q (err %v)", key, got, err)
 			}
-		case i%3 == 1:
+		case 1:
 			if err != nil || string(got) != "rewritten" {
 				t.Fatalf("key %q = %q (err %v), want \"rewritten\"", key, got, err)
 			}

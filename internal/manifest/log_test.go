@@ -160,7 +160,7 @@ func TestRecoverStopsAtATruncatedEdit(t *testing.T) {
 		t.Fatalf("Close: %v", err)
 	}
 
-	path := filepath.Join(dir, ManifestName(1))
+	path := filepath.Join(dir, Name(1))
 	full, err := os.ReadFile(path)
 	if err != nil {
 		t.Fatalf("read manifest: %v", err)
@@ -178,10 +178,10 @@ func TestRecoverStopsAtATruncatedEdit(t *testing.T) {
 
 	for cut := firstOnly; cut <= len(full); cut++ {
 		truncDir := t.TempDir()
-		if err := os.WriteFile(filepath.Join(truncDir, ManifestName(1)), full[:cut], 0o600); err != nil {
+		if err := os.WriteFile(filepath.Join(truncDir, Name(1)), full[:cut], 0o600); err != nil {
 			t.Fatalf("write truncated: %v", err)
 		}
-		if err := WriteCurrent(nil, truncDir, ManifestName(1)); err != nil {
+		if err := WriteCurrent(nil, truncDir, Name(1)); err != nil {
 			t.Fatalf("WriteCurrent: %v", err)
 		}
 
@@ -266,7 +266,7 @@ func TestRecoverRejectsCorruptionAfterValidRecords(t *testing.T) {
 		t.Fatalf("Close: %v", err)
 	}
 
-	path := filepath.Join(dir, ManifestName(1))
+	path := filepath.Join(dir, Name(1))
 	data, err := os.ReadFile(path)
 	if err != nil {
 		t.Fatalf("read: %v", err)
@@ -297,7 +297,7 @@ func TestAppendSkipsEmptyEdits(t *testing.T) {
 		t.Fatalf("Close: %v", err)
 	}
 
-	info, err := os.Stat(filepath.Join(dir, ManifestName(1)))
+	info, err := os.Stat(filepath.Join(dir, Name(1)))
 	if err != nil {
 		t.Fatalf("stat: %v", err)
 	}

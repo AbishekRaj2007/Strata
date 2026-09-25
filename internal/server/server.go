@@ -285,6 +285,14 @@ type conn struct {
 	// quitting asks the loop to stop after the current command completes.
 	quitting atomic.Bool
 
+	// argsBuf is reused across commands on this connection. commandArgs only
+	// needs it for the duration of one dispatch call -- the []byte elements
+	// it holds point into the resp.Value tree the reader just produced, not
+	// into argsBuf itself -- so the backing array is safe to reuse once
+	// dispatch returns. T8.3's fix for the commandArgs allocation site T8.2's
+	// heap profile found among the top five (docs/profiles/t8.2-report.md).
+	argsBuf [][]byte
+
 	// scanCursors bridges two different cursors. The engine's cursor is the
 	// last key returned, which is what keeps it valid across a compaction
 	// (plan.md §7.5); Redis clients, including go-redis, parse the wire
@@ -351,7 +359,8 @@ func (c *conn) serve() {
 			return
 		}
 
-		args, err := commandArgs(value)
+		args, err := commandArgs(value, c.argsBuf[:0])
+		c.argsBuf = args
 		if err != nil {
 			// A well-framed value that is not a command array is a client
 			// bug worth reporting, but not worth dropping the connection.
@@ -421,14 +430,16 @@ func (c *conn) closeSocket() {
 	})
 }
 
-// commandArgs converts a decoded value into command arguments. Clients always
-// send commands as an array of bulk strings; anything else is a client error.
-func commandArgs(v resp.Value) ([][]byte, error) {
+// commandArgs converts a decoded value into command arguments, appending onto
+// dst so a connection can reuse the same backing array across commands.
+// Clients always send commands as an array of bulk strings; anything else is
+// a client error.
+func commandArgs(v resp.Value, dst [][]byte) ([][]byte, error) {
 	if v.Type != resp.Array || v.Null {
 		return nil, errors.New("ERR Protocol error: expected an array of bulk strings")
 	}
 
-	args := make([][]byte, 0, len(v.Array))
+	args := dst
 	for _, elem := range v.Array {
 		if elem.Type != resp.BulkString || elem.Null {
 			return nil, errors.New("ERR Protocol error: expected a bulk string")

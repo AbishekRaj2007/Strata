@@ -46,10 +46,13 @@ func main() {
 			fmt.Fprintf(os.Stderr, "chart: %v\n", err)
 			os.Exit(1)
 		}
-		defer f.Close()
+		defer func() { _ = f.Close() }()
 		w = f
 	}
-	fmt.Fprint(w, svg)
+	if _, err := fmt.Fprint(w, svg); err != nil {
+		fmt.Fprintf(os.Stderr, "chart: write output: %v\n", err)
+		os.Exit(1)
+	}
 }
 
 func readPoints(path string) ([]point, error) {
@@ -61,7 +64,7 @@ func readPoints(path string) ([]point, error) {
 		if err != nil {
 			return nil, err
 		}
-		defer f.Close()
+		defer func() { _ = f.Close() }()
 		r = bufio.NewScanner(f)
 	}
 

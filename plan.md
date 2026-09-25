@@ -609,13 +609,15 @@ Fragmentation exists for one reason: to bound the blast radius of a torn write. 
 
 ---
 
-### - [ ] T2.2 — Implement sync policies and group commit
+### - [x] T2.2 — Implement sync policies and group commit
 
-> **Wired, unverified.** `internal/wal/policy.go` and `internal/wal/syncer.go`: all three policies, the leader-follower handoff, and the interval timer. Measured at **16.8× median speedup** with 32 writers against 1 (docs/benchmarks.md), past the 5× bar. The falsely-signalled-writer test exists and was verified by mutation — injecting the bug (reading the offset after the sync instead of capturing it before) makes it fail with named offsets.
+> **Wired and verified.** `internal/wal/policy.go` and `internal/wal/syncer.go`: all three policies, the leader-follower handoff, and the interval timer. `internal/wal`'s own group-commit benchmark test measured 16.0x speedup this run (docs/benchmarks.md records a 16.8x median across three prior runs), past the 5x bar. The falsely-signalled-writer test exists and was verified by mutation — injecting the bug (reading the offset after the sync instead of capturing it before) makes it fail with named offsets.
 >
-> `internal/engine/rotation.go`'s `memtableSet.Add` now binds a `wal.Syncer` to each slot (`openSlot`) and calls `AwaitDurable` after releasing `mu`, instead of syncing inside the write lock — this is the change the T7.4 stress profile and `docs/concurrency.md`'s "Known gap" section were waiting on. Releasing the lock around the fsync reopens the hazard that section predicted: a slot can rotate onto the immutable queue and reach the flusher while a writer is still mid-fsync against its WAL file, and `Discard`/`Close` must not close that fd out from under the fsync. Addressed with a per-slot `sync.WaitGroup` (`slot.inflight`): `Add` registers on it before releasing `mu` and `Discard`/`Close` wait on it before calling `wal.Writer.Close`.
+> `internal/engine/rotation.go`'s `memtableSet.Add` binds a `wal.Syncer` to each slot (`openSlot`) and calls `AwaitDurable` after releasing `mu`, instead of syncing inside the write lock — this is the change the T7.4 stress profile and `docs/concurrency.md`'s "Known gap" section were waiting on. Releasing the lock around the fsync reopens the hazard that section predicted: a slot can rotate onto the immutable queue and reach the flusher while a writer is still mid-fsync against its WAL file, and `Discard`/`Close` must not close that fd out from under the fsync. Addressed with a per-slot `sync.WaitGroup` (`slot.inflight`): `Add` registers on it before releasing `mu` and `Discard`/`Close` wait on it before calling `wal.Writer.Close`.
 >
-> **Not run.** `go build ./...` and `go vet ./...` are clean; the package test suite, `-race`, and the 32-client throughput benchmark have deliberately not been run against this change (explicit instruction, this session). The done-when conditions (5× throughput, the falsely-signalled-writer test, plus `-race` on the new lock-release ordering and the new `slot.inflight` interlock) are unverified. Stays unticked until they are.
+> A second hazard surfaced on inspection and is fixed alongside this: `wal.Writer.Offset()` is now read by `Syncer.leadSync` from a different goroutine than the one driving `WriteRecord`, but `offset` is a plain field `WriteRecord` mutates mid-call — a data race, and worse, a window where `Offset()` could report bytes not yet handed to the OS. `internal/wal/writer.go` now tracks that separately as `published atomic.Int64`, stored only immediately after each successful `WriteAt`, with `Offset()` reading it instead of `offset`.
+>
+> **Run and confirmed.** `go build ./...` and `go vet ./...` clean. `go test ./internal/wal/... -race` and `go test ./internal/engine/... -race` both pass, including `TestGroupCommitScalesWithConcurrency` and `TestNoWriterIsSignalledBeforeItsRecordIsSynced`. End-to-end confirmation against the real server (`strata-server -sync always`, `redis-benchmark -t set`, unpipelined): 1 client 584.7 ops/sec, 32 clients 8,912.7 ops/sec — **15.2x**, past the 5x bar, and consistent with the WAL-level number now that the lock-release wiring is actually live on the write path. (This supersedes the 744 ops/sec `sync=always`/50-client figure recorded under T8.1, which predates this wiring; see the note added there.)
 
 **Effort:** 3–4 h · **Model:** Opus 5 — the coordination logic is the interesting part
 
@@ -643,13 +645,13 @@ The judgement call is the failure taxonomy. A truncated *trailing* record is exp
 
 ---
 
-### - [ ] T2.4 — Build the crash-testing harness
+### - [x] T2.4 — Build the crash-testing harness
 
-> **Built, gated.** `test/crash/` holds the harness: process supervision with SIGKILL, the acknowledgement recorder, the verifier, and the `STRATA_CRASH_AT`/`STRATA_CRASH_AFTER_N` contract. Two self-tests run unconditionally and prove the plumbing drives a real server. The 100-iteration durability test is written and skips behind `STRATA_DURABLE`, because the map engine legitimately loses everything on restart; setting the variable today makes it fail with the exact missing keys, which is the behaviour Phase 3 needs. Stays unticked until it runs green against a durable engine as a CI job.
+> **Built and run green.** `test/crash/` holds the harness: process supervision with SIGKILL, the acknowledgement recorder, the verifier, and the `STRATA_CRASH_AT`/`STRATA_CRASH_AFTER_N` contract. The two unconditional self-tests (`TestHarnessDrivesServer`, `TestWorkloadRecordsOnlyAcknowledgedWrites`) pass. `TestAcknowledgedWritesSurviveKill` — 100 consecutive randomised SIGKILL/restart iterations at `sync=always` against the real `engine.LSM` (`STRATA_DURABLE=1`) — passes, 53s. `TestTargetedKillPoints` (the WAL-point fault-injection hooks) and `TestFlushWindowSurvivesKill` (50 flush-window kills, T3.5's remaining clause) both pass as well.
 >
-> **Correction to the previous version of this note:** it claimed the fault injection points existed "for every phase through 6." They did not — `STRATA_CRASH_AT` was defined as a constant and passed to the server's environment by `test/crash/harness.go`, but nothing in `cmd/strata-server` or `internal/engine` ever read it, so every `KillPoint` beyond a random-timing kill was a no-op the harness could arm but the server would ignore. `cmd/strata-server/main.go` now reads both env vars and builds a counting abort hook (`crashHook`), wired through a new `engine.Options.CrashHook func(point string) error` into `memtableSet.Add` (`after_wal_write`, `after_wal_sync`) and `Flusher.step` (`during_flush`, at `StepAfterTableSync`). `before_manifest_sync`/`after_manifest_sync` (T6.3's compaction points) remain unwired — out of scope for this pass; T6.3 already shipped its own in-process fault-injection tests for that path and did not depend on this mechanism.
+> `STRATA_CRASH_AT`/`STRATA_CRASH_AFTER_N` are read by `cmd/strata-server/main.go`, which builds a counting abort hook wired through `engine.Options.CrashHook func(point string) error` into `memtableSet.Add` (`after_wal_write`, `after_wal_sync`) and `Flusher.step` (`during_flush`, at `StepAfterTableSync`). `before_manifest_sync`/`after_manifest_sync` (T6.3's compaction points) remain unwired — T6.3 already shipped its own in-process fault-injection tests for that path and does not depend on this mechanism.
 >
-> **Not run.** This wiring, and the new `TestFlushWindowSurvivesKill` test it enables (see T3.5), have not been executed. `go build ./...` and `go vet ./...` are clean.
+> **CI job added.** `make crash` (`STRATA_DURABLE=1 go test ./test/crash/... -v -timeout 20m`) and a `crash` job in `.github/workflows/ci.yml`, satisfying the "running as a CI job" clause of *Done when*.
 
 **Effort:** 4–6 h · **Model:** Sonnet 5 for the harness, Fable 5 to design the verification predicate
 
@@ -730,17 +732,13 @@ The directory fsync is not optional and is widely missed. A file creation is not
 
 ---
 
-### - [ ] T3.5 — Implement the flusher and close the loop
+### - [x] T3.5 — Implement the flusher and close the loop
 
-> **Built; three of four done-when clauses met.** `internal/engine/flush.go` holds `Flusher`: it consumes the immutable queue, builds the SSTable via `sstable.WriteTable` (which fsyncs the file and the directory), appends ADD_FILE through `manifest.Log.Append` (which fsyncs, and is the commit point), installs the version, and only then discards the memtable and deletes its WAL. Green under `-race`.
+> **Built; all four done-when clauses met.** `internal/engine/flush.go` holds `Flusher`: it consumes the immutable queue, builds the SSTable via `sstable.WriteTable` (which fsyncs the file and the directory), appends ADD_FILE through `manifest.Log.Append` (which fsyncs, and is the commit point), installs the version, and only then discards the memtable and deletes its WAL. Green under `-race`.
 >
-> The ordering is proven by a deterministic fault-injection hook rather than by argument. `TestWALSurvivesUntilTheManifestCommits` stops the flush between the SSTable fsync and the manifest fsync and asserts the WAL is still on disk; it was mutation-tested by moving the retire into that window, which fails it by name. Table-count, readability and flat-memory clauses are covered by `TestFlushProducesOneTablePerMemtable`, `TestFlushedDataIsReadableAfterReplay` and `TestFlushMemoryStaysFlat` — the ratio and memory tests run at a size the suite can afford rather than at 1 GB, and say so.
+> The ordering is proven by a deterministic fault-injection hook rather than by argument. `TestWALSurvivesUntilTheManifestCommits` stops the flush between the SSTable fsync and the manifest fsync and asserts the WAL is still on disk; it was mutation-tested by moving the retire into that window, which fails it by name. Table-count, readability and flat-memory clauses are covered by `TestFlushProducesOneTablePerMemtable`, `TestFlushedDataIsReadableAfterReplay` and `TestFlushMemoryStaysFlat` — the ratio and memory tests run at a size the suite can afford rather than at 1 GB (verified again this run: 19 tables for ~628,000 bytes at a 32 KiB threshold, and heap growing from 473,656 to 623,592 bytes for 10x the writes), and say so.
 >
-> **Unticked on the fourth clause: "50 kills targeted at the flush window lose nothing."** `cmd/strata-server/main.go` now opens the durable `engine.LSM` (`engine.Open`) instead of `engine.NewMemory()`, wiring in the WAL, flusher, manifest and compactor behind the same `Engine` interface — the server is durable end to end, and `kill -9` followed by a restart was verified by hand to recover written keys.
->
-> `test/crash/crash_test.go` now has `TestFlushWindowSurvivesKill`: 50 iterations, each arming `KillPointDuringFlush` directly (via `cmd/strata-server`'s new `STRATA_CRASH_AT` wiring, T2.4) rather than relying on random timing, against a server started with a new `-memtable-bytes` override (16 KiB) so a flush actually happens within a short run instead of needing tens of thousands of small writes to cross the real 4 MB default. The kill lands on a varying occurrence count per iteration so it hits different flushes across the run rather than always the first.
->
-> **Not run.** This test, and the `crashHook`/`CrashHook` wiring it depends on, have not been executed against this change — no `go test`, no `-race`. `go build ./...` and `go vet ./...` are clean. Stays unticked until the sweep is actually run and passes.
+> **Fourth clause closed:** "50 kills targeted at the flush window lose nothing." `cmd/strata-server/main.go` opens the durable `engine.LSM` (`engine.Open`), wiring in the WAL, flusher, manifest and compactor behind the same `Engine` interface. `test/crash/crash_test.go`'s `TestFlushWindowSurvivesKill` — 50 iterations, each arming `KillPointDuringFlush` directly via T2.4's `STRATA_CRASH_AT` wiring against a server with `-memtable-bytes` set to 16 KiB so a flush actually happens within a short run, the kill landing on a varying occurrence count per iteration so it hits different flushes across the run — was run under `STRATA_DURABLE=1` as part of closing T2.4 and passed (12.2s, zero durability violations). `go build ./...`, `go vet ./...`, and `go test ./internal/engine/... -race` are all clean.
 
 **Effort:** 4–6 h · **Model:** Opus 5 for the ordering constraints
 
@@ -1129,7 +1127,11 @@ Add the run that matters most: throughput and latency plotted *over time* during
 
 ---
 
-### - [ ] T8.2 — Profile and produce the allocation and contention report
+### - [x] T8.2 — Profile and produce the allocation and contention report
+
+> **Closed, with one measurement gap disclosed.** `docs/profiles/t8.2-report.md` has five ranked, hypothesis-first items in each of the three categories against real heap (`heap.prof`) and mutex/block (`mutex.prof`, `block.prof`) profiles captured under `test/bench/loadgen`'s mixed 80/20 workload via `test/stress`'s existing `-stress.profile` mechanism. The worst-contention hypothesis — `memtableSet.Add`'s lock, already named by `docs/concurrency.md` and the T8.1 `sync=always` finding — is confirmed and quantified: 84–97% of block/mutex samples, and persists under `sync=interval`, proving the contention is inherent to the single `RWMutex` design rather than an artifact of holding it across fsync.
+>
+> **CPU profiling could not be captured.** Both `curl .../debug/pprof/profile` against the live server under load and `go test -cpuprofile` (with *no* load at all) are reliably `SIGKILL`ed by this sandboxed execution environment — reproduced 8/8 times, isolated to the `SIGPROF`/`setitimer` mechanism specifically (heap/mutex/block profiling of the identical loaded server succeeds every time). The report's CPU-consumer ranking is therefore stated as a hypothesis from code inspection only, explicitly flagged as not meeting the "profile first" bar, with re-running on an unrestricted machine named as the next step. This is an environment limitation, not a fabricated measurement.
 
 **Effort:** 4–5 h · **Model:** Opus 5 for flamegraph interpretation
 
@@ -1143,7 +1145,9 @@ Write the hypotheses *before* you optimise. Comparing what you predicted against
 
 ---
 
-### - [ ] T8.3 — Execute the optimisation cycle
+### - [x] T8.3 — Execute the optimisation cycle
+
+> **Closed.** `docs/optimizations.md` documents four attempts, one change at a time: WAL encode-buffer reuse (5→1 allocs/op), the per-connection command-args slice reuse (3→0 allocs/op), `GOGC=400` (+72% throughput, p99 2.6x better than default, measured across 3 runs each), and a RESP bulk-string buffer reuse that **failed** — it broke correctness (`TestReadArray`, a fuzz seed, and six `internal/server` tests, one with a panic) because, unlike the two successful buffer-reuse changes, the reused bytes are still live past the point of reuse (`Value.Bytes` is handed to the caller and stored by the engine, not fully consumed before the next read). Reverted; `internal/resp/resp.go` is unchanged. Three successes with before/after data plus one documented failure satisfies the done-when condition.
 
 **Effort:** 5–6 h · **Model:** Opus 5 for strategy, Claude Code (Sonnet 5) for the mechanical changes
 
@@ -1157,7 +1161,9 @@ Document each change as a before/after table. Include the optimisations that *di
 
 ---
 
-### - [ ] T8.4 — Characterise GC behaviour and tail latency
+### - [x] T8.4 — Characterise GC behaviour and tail latency
+
+> **Closed.** `docs/gc-characterization.md` measures all four items via `GODEBUG=gctrace=1` (the print-based mechanism sidesteps T8.2's SIGPROF sandbox restriction): pause distribution under load (1,325 GCs/20s at `GOGC=100`, mean STW 0.17ms, max 7.9ms), correlation with p99 (max STW pause tracks measured p99 closely at both `GOGC=100` and `GOGC=400`, both varying together by roughly the same factor when `GOGC` changes), heap growth vs. `-memtable-mb` (live heap ~2-3x memtable size at both 4 MB and 32 MB), and `GOGC`/`GOMEMLIMIT` interaction (`GOMEMLIMIT=64MiB` reproduces `GOGC=100`'s behaviour almost exactly even at `GOGC=400`, correctly vetoing the tuning when memory is capped). ADR-001's loop is closed with a number: GC's worst observed single-pause cost is 7.9ms at default settings, tunable down to 1.6ms, against p99/max latencies of the same order — real but not dominant next to the 83-97% mutex-wait share T8.2 measured separately.
 
 **Effort:** 3–4 h · **Model:** Fable 5 — the subtlest analysis in the project
 
@@ -1176,7 +1182,9 @@ This closes the loop on ADR-001. You chose Go and accepted GC pauses; now quanti
 **Goal:** the repository speaks for you when you are not in the room.
 **Total effort:** 12–16 hours.
 
-### - [ ] T9.1 — Write the README as a product page
+### - [x] T9.1 — Write the README as a product page
+
+> **Closed.** Rewritten from the Phase-1-status stub it was: benchmark table above the fold with hardware stated, an ASCII architecture diagram, a verified 5-line quick start (fixed the default port from an assumed 6379 to the actual `:6380` after running it end to end), the feature list and non-goals, a design-decisions table linking all nine ADRs, and a "what I learned" section that includes the memtable-lock finding, the failed buffer-reuse optimisation, the sync=always wiring-gap story, the live-desktop benchmarking noise, the SIGPROF sandbox restriction, and the currently-open `test/fault` regression -- disclosed rather than hidden, per this task's own instruction that what-went-wrong is what distinguishes the page.
 
 **Effort:** 3–4 h · **Model:** Opus 5 for structure and honesty review, Haiku 4.5 for polish
 
@@ -1190,13 +1198,13 @@ The non-goals and what-went-wrong sections are what distinguish you. Anyone can 
 
 ---
 
-### - [ ] T9.2 — Complete the code quality and documentation pass
+### - [x] T9.2 — Complete the code quality and documentation pass
 
 > **Partial.** Mechanical checks are clean: `gofmt -l .` and `go vet ./...` report nothing, every package carries a doc comment (either `doc.go` or, for single-file `cmd`/`test` packages, the file's own header comment -- confirmed for all of them), no `TODO` markers exist, no `//nolint` suppressions exist, no debug `fmt.Println`/`print` calls outside `strata-cli`'s legitimate stdout output, and a scan for `fmt.Errorf` calls wrapping an `err` without `%w` found none.
 >
 > The adversarial read plan.md calls out -- `internal/compaction/executor.go` and the version-install path (`internal/compaction/commit.go`, `internal/manifest/versionset.go`) -- is done, looking specifically for the failure-path bugs this kind of code hides: whether `Executor.Run`'s deferred cleanup could double-`Abort` a `FileWriter` (it can, and `FileWriter.Abort` is confirmed idempotent via its own `done` guard, so this is safe by construction, not by luck); whether the `meta, err := finishOutput(out)` inside an `if` block shadows the named return `err` in a way that breaks the deferred cleanup (it does shadow, but `return nil, err` assigns to the named return regardless of the shadowing, so the deferred function still observes the right value); and whether `Committer.DropObsolete` evicts cache entries for files that were never actually deleted on a partial `DeleteObsolete` failure (it does not, correctly, because `DeleteObsolete` only returns the numbers it actually removed). No defect found in either file.
 >
-> **Not done: `golangci-lint run`.** The tool is not installed, and this machine hit severe memory pressure during T8.2 (132 MB free, swap 87% full, a benchmark server OOM-killed) in the same session -- installing and running a new linter under those conditions risked repeating that failure against tooling rather than against a disposable benchmark process. Deferred until the machine has headroom; everything else `golangci-lint` would catch that static analysis already covers (`gofmt`, `go vet`) is clean.
+> **Closed.** `golangci-lint` (installed via `go install`, no `sudo` needed) found 38 issues on first run: unchecked errors, two `%v`-instead-of-`%w` wraps, a real type assertion that should have been `errors.As`, one genuinely ineffectual assignment in `internal/compaction/picker.go`, a stuttering exported name (`manifest.ManifestName` → `manifest.Name`, renamed across all call sites and tests), 25 missing doc comments on exported identifiers (one of which uncovered a real doc-comment misplacement in `internal/sstable/table.go`, where `OpenOptions`'s comment had been describing `Table`), a cosmetic tagged-switch suggestion, and two functions carrying an unused return value (`checkContents`'s always-nil error, `loadgen`'s unused `resp.Value`) that were simplified rather than suppressed. All 38 fixed with no `//nolint` anywhere in the tree; `golangci-lint run ./...` now reports 0 issues. `go test ./...` is green except the pre-existing, separately tracked `test/fault` regression (see T9.1's "what went wrong" and the open task to fix it) -- unrelated to any lint fix, confirmed unchanged before and after.
 
 **Effort:** 3–4 h · **Model:** Opus 5 for review, Claude Code (Sonnet 5) for mechanical fixes
 
@@ -1240,7 +1248,9 @@ One deep post beats five shallow ones. Then a LinkedIn post with the architectur
 
 ---
 
-### - [ ] T9.5 — Build the interview preparation package
+### - [x] T9.5 — Build the interview preparation package
+
+> **Written package closed; live rehearsal is on you.** `docs/interview-prep.md` has the 60-second summary, an architecture narration through a real write and read, written answers to every §22 question -- each citing a specific measurement or commit rather than a plausible-sounding generality -- and the hardest-bug account (`Writer.Offset()`'s race between `WriteRecord`'s mid-call mutation and `Syncer.leadSync` reading it from another goroutine, invisible without `-race` under real concurrency, fixed in commit `62bc593`). **Not done and not something I can do for you:** actually whiteboarding the architecture from memory in under three minutes, and running the adversarial mock interview with Fable 5 -- both require you, not a written artifact, and the self-check list at the bottom of the doc is what to run through first.
 
 **Effort:** 2–3 h · **Model:** Fable 5 — ask it to interview you adversarially
 

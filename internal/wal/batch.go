@@ -10,8 +10,10 @@ import (
 // end of log (io.EOF); that distinction is the whole of docs/format.md §2.3.
 var ErrCorrupt = errors.New("wal corruption")
 
+// Kind distinguishes a SET record from a DELETE within a batch.
 type Kind uint8
 
+// The record kinds a Batch can hold.
 const (
 	KindSet    Kind = 0
 	KindDelete Kind = 1
@@ -31,10 +33,12 @@ type Batch struct {
 	Records  []Record
 }
 
+// AppendSet adds a SET record to the batch.
 func (b *Batch) AppendSet(key, value []byte) {
 	b.Records = append(b.Records, Record{Kind: KindSet, Key: key, Value: value})
 }
 
+// AppendDelete adds a DELETE record to the batch.
 func (b *Batch) AppendDelete(key []byte) {
 	b.Records = append(b.Records, Record{Kind: KindDelete, Key: key, Value: nil})
 }

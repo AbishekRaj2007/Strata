@@ -128,7 +128,7 @@ func (p *Picker) Pick(v *manifest.Version) *Compaction {
 	// can bound -- see growBaseLocked.
 	if level > 0 {
 		c.Base = p.growBase(v, c)
-		smallest, largest = keyRange(c.Base)
+		_, largest = keyRange(c.Base)
 	}
 
 	full, fullLargest := keyRange(c.Inputs())

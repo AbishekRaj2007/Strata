@@ -17,17 +17,17 @@ func writeManifestStub(t *testing.T, dir, name string) {
 }
 
 func TestManifestName(t *testing.T) {
-	if got := ManifestName(1); got != "MANIFEST-000001" {
-		t.Errorf("ManifestName(1) = %q", got)
+	if got := Name(1); got != "MANIFEST-000001" {
+		t.Errorf("Name(1) = %q", got)
 	}
-	if got := ManifestName(123456); got != "MANIFEST-123456" {
-		t.Errorf("ManifestName(123456) = %q", got)
+	if got := Name(123456); got != "MANIFEST-123456" {
+		t.Errorf("Name(123456) = %q", got)
 	}
 }
 
 func TestWriteAndReadCurrent(t *testing.T) {
 	dir := t.TempDir()
-	name := ManifestName(4)
+	name := Name(4)
 	writeManifestStub(t, dir, name)
 
 	if err := WriteCurrent(nil, dir, name); err != nil {
@@ -57,7 +57,7 @@ func TestWriteAndReadCurrent(t *testing.T) {
 // anything the manifest does not reference.
 func TestWriteCurrentLeavesNoTemporary(t *testing.T) {
 	dir := t.TempDir()
-	name := ManifestName(1)
+	name := Name(1)
 	writeManifestStub(t, dir, name)
 
 	if err := WriteCurrent(nil, dir, name); err != nil {
@@ -72,7 +72,7 @@ func TestWriteCurrentLeavesNoTemporary(t *testing.T) {
 // rather than appending or leaving the old contents behind.
 func TestWriteCurrentReplacesAtomically(t *testing.T) {
 	dir := t.TempDir()
-	first, second := ManifestName(1), ManifestName(2)
+	first, second := Name(1), Name(2)
 	writeManifestStub(t, dir, first)
 	writeManifestStub(t, dir, second)
 

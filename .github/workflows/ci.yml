@@ -62,3 +62,18 @@ jobs:
       - uses: golangci/golangci-lint-action@v8
         with:
           version: v2.1.6
+
+  crash:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+          cache: true
+
+      # T2.4's done-when condition: 100 consecutive randomised SIGKILL/restart
+      # iterations at sync=always, every acknowledged write present after
+      # recovery, running as a CI job rather than only ever by hand.
+      - name: Kill/restart durability suite
+        run: make crash

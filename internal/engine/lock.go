@@ -34,7 +34,7 @@ func lockDir(dir string) (*dirLock, error) {
 	}
 
 	if err := syscall.Flock(int(f.Fd()), syscall.LOCK_EX|syscall.LOCK_NB); err != nil {
-		f.Close()
+		_ = f.Close()
 		return nil, fmt.Errorf("engine: directory %s is already open by another process: %w", dir, err)
 	}
 

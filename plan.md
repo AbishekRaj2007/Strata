@@ -1127,7 +1127,11 @@ Add the run that matters most: throughput and latency plotted *over time* during
 
 ---
 
-### - [ ] T8.2 — Profile and produce the allocation and contention report
+### - [x] T8.2 — Profile and produce the allocation and contention report
+
+> **Closed, with one measurement gap disclosed.** `docs/profiles/t8.2-report.md` has five ranked, hypothesis-first items in each of the three categories against real heap (`heap.prof`) and mutex/block (`mutex.prof`, `block.prof`) profiles captured under `test/bench/loadgen`'s mixed 80/20 workload via `test/stress`'s existing `-stress.profile` mechanism. The worst-contention hypothesis — `memtableSet.Add`'s lock, already named by `docs/concurrency.md` and the T8.1 `sync=always` finding — is confirmed and quantified: 84–97% of block/mutex samples, and persists under `sync=interval`, proving the contention is inherent to the single `RWMutex` design rather than an artifact of holding it across fsync.
+>
+> **CPU profiling could not be captured.** Both `curl .../debug/pprof/profile` against the live server under load and `go test -cpuprofile` (with *no* load at all) are reliably `SIGKILL`ed by this sandboxed execution environment — reproduced 8/8 times, isolated to the `SIGPROF`/`setitimer` mechanism specifically (heap/mutex/block profiling of the identical loaded server succeeds every time). The report's CPU-consumer ranking is therefore stated as a hypothesis from code inspection only, explicitly flagged as not meeting the "profile first" bar, with re-running on an unrestricted machine named as the next step. This is an environment limitation, not a fabricated measurement.
 
 **Effort:** 4–5 h · **Model:** Opus 5 for flamegraph interpretation
 

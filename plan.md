@@ -1161,7 +1161,9 @@ Document each change as a before/after table. Include the optimisations that *di
 
 ---
 
-### - [ ] T8.4 — Characterise GC behaviour and tail latency
+### - [x] T8.4 — Characterise GC behaviour and tail latency
+
+> **Closed.** `docs/gc-characterization.md` measures all four items via `GODEBUG=gctrace=1` (the print-based mechanism sidesteps T8.2's SIGPROF sandbox restriction): pause distribution under load (1,325 GCs/20s at `GOGC=100`, mean STW 0.17ms, max 7.9ms), correlation with p99 (max STW pause tracks measured p99 closely at both `GOGC=100` and `GOGC=400`, both varying together by roughly the same factor when `GOGC` changes), heap growth vs. `-memtable-mb` (live heap ~2-3x memtable size at both 4 MB and 32 MB), and `GOGC`/`GOMEMLIMIT` interaction (`GOMEMLIMIT=64MiB` reproduces `GOGC=100`'s behaviour almost exactly even at `GOGC=400`, correctly vetoing the tuning when memory is capped). ADR-001's loop is closed with a number: GC's worst observed single-pause cost is 7.9ms at default settings, tunable down to 1.6ms, against p99/max latencies of the same order — real but not dominant next to the 83-97% mutex-wait share T8.2 measured separately.
 
 **Effort:** 3–4 h · **Model:** Fable 5 — the subtlest analysis in the project
 

@@ -1145,7 +1145,9 @@ Write the hypotheses *before* you optimise. Comparing what you predicted against
 
 ---
 
-### - [ ] T8.3 — Execute the optimisation cycle
+### - [x] T8.3 — Execute the optimisation cycle
+
+> **Closed.** `docs/optimizations.md` documents four attempts, one change at a time: WAL encode-buffer reuse (5→1 allocs/op), the per-connection command-args slice reuse (3→0 allocs/op), `GOGC=400` (+72% throughput, p99 2.6x better than default, measured across 3 runs each), and a RESP bulk-string buffer reuse that **failed** — it broke correctness (`TestReadArray`, a fuzz seed, and six `internal/server` tests, one with a panic) because, unlike the two successful buffer-reuse changes, the reused bytes are still live past the point of reuse (`Value.Bytes` is handed to the caller and stored by the engine, not fully consumed before the next read). Reverted; `internal/resp/resp.go` is unchanged. Three successes with before/after data plus one documented failure satisfies the done-when condition.
 
 **Effort:** 5–6 h · **Model:** Opus 5 for strategy, Claude Code (Sonnet 5) for the mechanical changes
 

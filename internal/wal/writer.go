@@ -46,6 +46,13 @@ type Writer struct {
 	// the file. Storing it only immediately after each successful WriteAt --
 	// never at the point offset itself advances -- is what keeps both true.
 	published atomic.Int64
+
+	// encodeBuf is reused across Write calls. WriteRecord copies every byte
+	// of its payload into buf before returning, so nothing outlives the
+	// call -- the same backing array is safe to hand to Encode again on the
+	// next Write. This is T8.3's fix for the wal.Batch.Encode allocation
+	// site T8.2's heap profile found among the top five.
+	encodeBuf []byte
 }
 
 // NewWriter frames batches into f, appending from its current end.
@@ -64,7 +71,8 @@ func NewWriter(f vfs.File) *Writer {
 // The returned offset means "these bytes are with the OS", never "these bytes
 // are durable" -- durability is the Syncer's business.
 func (w *Writer) Write(b *Batch) (int64, error) {
-	return w.WriteRecord(b.Encode(nil))
+	w.encodeBuf = b.Encode(w.encodeBuf[:0])
+	return w.WriteRecord(w.encodeBuf)
 }
 
 // WriteRecord frames one opaque payload as a single record, fragmenting it

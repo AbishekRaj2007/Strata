@@ -9,6 +9,7 @@ import (
 // (docs/format.md §4).
 type EditKind uint32
 
+// The edit kinds docs/format.md §4 defines.
 const (
 	EditAddFile           EditKind = 1
 	EditDeleteFile        EditKind = 2

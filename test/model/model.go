@@ -32,10 +32,12 @@ type Reference struct {
 	dirty  bool
 }
 
+// NewReference returns an empty Reference.
 func NewReference() *Reference {
 	return &Reference{data: make(map[string]string), dirty: true}
 }
 
+// Put implements the same semantics as engine.Engine.Put.
 func (r *Reference) Put(key, value []byte) error {
 	if _, existed := r.data[string(key)]; !existed {
 		r.dirty = true
@@ -44,6 +46,7 @@ func (r *Reference) Put(key, value []byte) error {
 	return nil
 }
 
+// Get implements the same semantics as engine.Engine.Get.
 func (r *Reference) Get(key []byte) ([]byte, error) {
 	v, ok := r.data[string(key)]
 	if !ok {
@@ -52,6 +55,7 @@ func (r *Reference) Get(key []byte) ([]byte, error) {
 	return []byte(v), nil
 }
 
+// Delete implements the same semantics as engine.Engine.Delete.
 func (r *Reference) Delete(key []byte) (bool, error) {
 	_, existed := r.data[string(key)]
 	if existed {
@@ -114,6 +118,7 @@ func (r *Reference) Scan(cursor []byte, count int) (engine.ScanResult, error) {
 // OpKind names an operation in a generated sequence.
 type OpKind int
 
+// The operation kinds a generated sequence can contain.
 const (
 	OpPut OpKind = iota
 	OpGet

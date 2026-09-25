@@ -27,6 +27,7 @@ const (
 // padding unambiguous to a reader.
 type FragmentType uint8
 
+// The fragment types §2.1 defines.
 const (
 	FragmentFull   FragmentType = 1
 	FragmentFirst  FragmentType = 2

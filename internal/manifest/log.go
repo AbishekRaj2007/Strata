@@ -35,7 +35,7 @@ type Log struct {
 // crash takes the whole database with it.
 func CreateLog(fsys vfs.FS, dir string, number uint64) (*Log, error) {
 	fsys = vfs.Or(fsys)
-	name := ManifestName(number)
+	name := Name(number)
 	path := filepath.Join(dir, name)
 
 	f, err := fsys.Create(path)
@@ -82,7 +82,7 @@ func (l *Log) Append(e *VersionEdit) error {
 		// this call is about to report as failed. Roll it back so the file
 		// on disk agrees with the answer being returned.
 		if rerr := l.w.Rollback(mark); rerr != nil {
-			return fmt.Errorf("manifest: sync %s: %w (rollback failed: %v)", l.name, err, rerr)
+			return fmt.Errorf("manifest: sync %s: %w (rollback failed: %w)", l.name, err, rerr)
 		}
 		return fmt.Errorf("manifest: sync %s: %w", l.name, err)
 	}

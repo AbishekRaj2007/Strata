@@ -1,6 +1,7 @@
 package model
 
 import (
+	"errors"
 	"fmt"
 	"math/rand"
 )
@@ -51,8 +52,7 @@ func Soak(sys System, ref *Reference, rng *rand.Rand, cfg SoakConfig) error {
 
 		if err := Run(sys, ref, gen.Generate(n)); err != nil {
 			var d Divergence
-			if as, ok := err.(Divergence); ok {
-				d = as
+			if errors.As(err, &d) {
 				d.Index += done
 				return d
 			}

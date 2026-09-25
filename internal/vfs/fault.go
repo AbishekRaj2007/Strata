@@ -13,6 +13,7 @@ import (
 // OpKind names a filesystem operation the injector can fail.
 type OpKind string
 
+// The operation kinds Injector can fail.
 const (
 	OpCreate   OpKind = "create"
 	OpOpen     OpKind = "open"
@@ -226,6 +227,7 @@ func (in *Injector) apply(kind OpKind, path string) error {
 	return fmt.Errorf("%s %s: %w", kind, path, f.err())
 }
 
+// Create implements FS, applying any fault configured for OpCreate first.
 func (in *Injector) Create(path string) (File, error) {
 	if err := in.apply(OpCreate, path); err != nil {
 		return nil, err
@@ -234,6 +236,7 @@ func (in *Injector) Create(path string) (File, error) {
 	return in.wrap(f, err)
 }
 
+// CreateTruncate implements FS, applying any fault configured for OpCreate first.
 func (in *Injector) CreateTruncate(path string) (File, error) {
 	if err := in.apply(OpCreate, path); err != nil {
 		return nil, err
@@ -242,6 +245,7 @@ func (in *Injector) CreateTruncate(path string) (File, error) {
 	return in.wrap(f, err)
 }
 
+// Open implements FS, applying any fault configured for OpOpen first.
 func (in *Injector) Open(path string) (File, error) {
 	if err := in.apply(OpOpen, path); err != nil {
 		return nil, err
@@ -250,6 +254,7 @@ func (in *Injector) Open(path string) (File, error) {
 	return in.wrap(f, err)
 }
 
+// OpenDir implements FS, applying any fault configured for OpOpenDir first.
 func (in *Injector) OpenDir(path string) (File, error) {
 	if err := in.apply(OpOpenDir, path); err != nil {
 		return nil, err
@@ -265,6 +270,7 @@ func (in *Injector) wrap(f File, err error) (File, error) {
 	return &faultFile{in: in, File: f}, nil
 }
 
+// Remove implements FS, applying any fault configured for OpRemove first.
 func (in *Injector) Remove(path string) error {
 	if err := in.apply(OpRemove, path); err != nil {
 		return err
@@ -272,6 +278,7 @@ func (in *Injector) Remove(path string) error {
 	return in.under.Remove(path)
 }
 
+// Rename implements FS, applying any fault configured for OpRename first.
 func (in *Injector) Rename(oldPath, newPath string) error {
 	if err := in.apply(OpRename, oldPath); err != nil {
 		return err
@@ -279,6 +286,7 @@ func (in *Injector) Rename(oldPath, newPath string) error {
 	return in.under.Rename(oldPath, newPath)
 }
 
+// MkdirAll implements FS, applying any fault configured for OpMkdirAll first.
 func (in *Injector) MkdirAll(path string, perm fs.FileMode) error {
 	if err := in.apply(OpMkdirAll, path); err != nil {
 		return err
@@ -286,6 +294,7 @@ func (in *Injector) MkdirAll(path string, perm fs.FileMode) error {
 	return in.under.MkdirAll(path, perm)
 }
 
+// ReadDir implements FS, applying any fault configured for OpReadDir first.
 func (in *Injector) ReadDir(path string) ([]os.DirEntry, error) {
 	if err := in.apply(OpReadDir, path); err != nil {
 		return nil, err
@@ -293,6 +302,7 @@ func (in *Injector) ReadDir(path string) ([]os.DirEntry, error) {
 	return in.under.ReadDir(path)
 }
 
+// ReadFile implements FS, applying any fault configured for OpReadFile first.
 func (in *Injector) ReadFile(path string) ([]byte, error) {
 	if err := in.apply(OpReadFile, path); err != nil {
 		return nil, err
@@ -300,6 +310,7 @@ func (in *Injector) ReadFile(path string) ([]byte, error) {
 	return in.under.ReadFile(path)
 }
 
+// Stat implements FS, applying any fault configured for OpStat first.
 func (in *Injector) Stat(path string) (fs.FileInfo, error) {
 	if err := in.apply(OpStat, path); err != nil {
 		return nil, err

@@ -166,7 +166,7 @@ func parseInt(field []byte) (int64, error) {
 	}
 	n, err := strconv.ParseInt(string(field), 10, 64)
 	if err != nil {
-		return 0, fmt.Errorf("%w: bad numeric field %q: %v", ErrProtocol, field, err)
+		return 0, fmt.Errorf("%w: bad numeric field %q: %w", ErrProtocol, field, err)
 	}
 	return n, nil
 }

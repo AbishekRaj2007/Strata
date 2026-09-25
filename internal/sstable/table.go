@@ -372,9 +372,6 @@ func syncDir(fsys vfs.FS, dir string) error {
 	return nil
 }
 
-// Table is an opened, immutable SSTable ready for reads. The footer and
-// index are loaded and validated at Open; data blocks are loaded and
-// checksum-verified on demand.
 // OpenOptions attaches a table to the shared block cache. A zero value opens
 // an uncached table, which is what every test that only cares about the file
 // format wants.
@@ -393,6 +390,9 @@ type OpenOptions struct {
 	FS vfs.FS
 }
 
+// Table is an opened, immutable SSTable ready for reads. The footer and
+// index are loaded and validated at Open; data blocks are loaded and
+// checksum-verified on demand.
 type Table struct {
 	f      vfs.File
 	number uint64

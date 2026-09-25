@@ -107,9 +107,7 @@ func check(dir string, v *manifest.Version, atRest bool) (*Report, error) {
 	if err := checkManifestMatchesDisk(dir, v, r, atRest); err != nil {
 		return nil, err
 	}
-	if err := checkContents(dir, v, r); err != nil {
-		return nil, err
-	}
+	checkContents(dir, v, r)
 	checkL0Ordering(v, r)
 
 	return r, nil
@@ -168,7 +166,7 @@ func checkManifestMatchesDisk(dir string, v *manifest.Version, r *Report, atRest
 // checkContents reads every file and verifies what is inside it against what
 // the manifest claims, plus the two rules that only the contents can answer:
 // entries in comparator order, and no user key at a level twice.
-func checkContents(dir string, v *manifest.Version, r *Report) error {
+func checkContents(dir string, v *manifest.Version, r *Report) {
 	lastSeq := v.LastSequence()
 
 	for level := 0; level < manifest.NumLevels; level++ {
@@ -206,7 +204,6 @@ func checkContents(dir string, v *manifest.Version, r *Report) error {
 			}
 		}
 	}
-	return nil
 }
 
 // checkOneTable verifies a single file against its metadata.

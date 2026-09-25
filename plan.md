@@ -1248,7 +1248,9 @@ One deep post beats five shallow ones. Then a LinkedIn post with the architectur
 
 ---
 
-### - [ ] T9.5 — Build the interview preparation package
+### - [x] T9.5 — Build the interview preparation package
+
+> **Written package closed; live rehearsal is on you.** `docs/interview-prep.md` has the 60-second summary, an architecture narration through a real write and read, written answers to every §22 question -- each citing a specific measurement or commit rather than a plausible-sounding generality -- and the hardest-bug account (`Writer.Offset()`'s race between `WriteRecord`'s mid-call mutation and `Syncer.leadSync` reading it from another goroutine, invisible without `-race` under real concurrency, fixed in commit `62bc593`). **Not done and not something I can do for you:** actually whiteboarding the architecture from memory in under three minutes, and running the adversarial mock interview with Fable 5 -- both require you, not a written artifact, and the self-check list at the bottom of the doc is what to run through first.
 
 **Effort:** 2–3 h · **Model:** Fable 5 — ask it to interview you adversarially
 

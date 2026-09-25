@@ -129,7 +129,14 @@ Run on 2026-09-11. See [the full section below](#amplification--the-three-costs-
 
 ## Optimisation log (T8.3)
 
-Not yet run. One row per change, before and after, including the optimisations that did not work.
+Run. See [docs/optimizations.md](optimizations.md) for the full before/after
+data: WAL encode-buffer reuse (5→1 allocs/op), the per-connection
+command-args slice reuse (3→0 allocs/op), and `GOGC=400` (+72% throughput,
+p99 2.6x better than default) succeeded; a RESP bulk-string buffer reuse
+failed and is documented with its root cause. See also
+[docs/gc-characterization.md](gc-characterization.md) for T8.4's GC pause /
+p99 correlation and [docs/profiles/t8.2-report.md](profiles/t8.2-report.md)
+for the profiling data that ordered this list.
 
 ## Bloom filters and block cache — the tuning study (T5.3)
 

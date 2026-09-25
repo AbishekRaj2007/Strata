@@ -1182,7 +1182,9 @@ This closes the loop on ADR-001. You chose Go and accepted GC pauses; now quanti
 **Goal:** the repository speaks for you when you are not in the room.
 **Total effort:** 12–16 hours.
 
-### - [ ] T9.1 — Write the README as a product page
+### - [x] T9.1 — Write the README as a product page
+
+> **Closed.** Rewritten from the Phase-1-status stub it was: benchmark table above the fold with hardware stated, an ASCII architecture diagram, a verified 5-line quick start (fixed the default port from an assumed 6379 to the actual `:6380` after running it end to end), the feature list and non-goals, a design-decisions table linking all nine ADRs, and a "what I learned" section that includes the memtable-lock finding, the failed buffer-reuse optimisation, the sync=always wiring-gap story, the live-desktop benchmarking noise, the SIGPROF sandbox restriction, and the currently-open `test/fault` regression -- disclosed rather than hidden, per this task's own instruction that what-went-wrong is what distinguishes the page.
 
 **Effort:** 3–4 h · **Model:** Opus 5 for structure and honesty review, Haiku 4.5 for polish
 

@@ -77,6 +77,18 @@ func (t *fileTarget) append(b []byte) (int64, error) {
 
 func (t *fileTarget) Sync() error { return t.f.Sync() }
 
+// TruncateTo implements Syncable. Unused by this benchmark, which never
+// fails a sync, but required to satisfy the interface.
+func (t *fileTarget) TruncateTo(offset int64) error {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	if err := t.f.Truncate(offset); err != nil {
+		return err
+	}
+	t.offset = offset
+	return nil
+}
+
 // TestGroupCommitScalesWithConcurrency is T2.2's done-when condition:
 // throughput at sync=always with 32 concurrent writers must be at least 5x the
 // single-writer figure. Without group commit the two are identical, because

@@ -275,6 +275,24 @@ func (s *memtableSet) Add(key, value []byte, tombstone bool) (seq uint64, endOff
 	// Syncer.AwaitDurable no-ops under SyncInterval and SyncNever, so this
 	// call is unconditional; the policy check lives in exactly one place.
 	if err := active.syncer.AwaitDurable(endOffset); err != nil {
+		// The record this call itself appended, and any other writer's
+		// record appended after it before the failure was known, is now
+		// neither confirmed durable nor safely absent -- Syncer's own
+		// syncErr latch means no later sync will ever resolve that either
+		// way. Truncating back to the last offset actually synced is what
+		// stops a future reopen of this same running process (recovery
+		// after catching this error, or a fault-injection sweep's own
+		// verification step) from replaying a write nothing acknowledged as
+		// if it were real. mu is retaken here, rather than done inside
+		// Syncer itself, because that is the lock every Write to this WAL
+		// already serialises on -- truncating without it would race a
+		// concurrent writer still appending to the same file.
+		s.mu.Lock()
+		truncErr := active.wal.TruncateTo(active.syncer.SyncedOffset())
+		s.mu.Unlock()
+		if truncErr != nil {
+			return 0, 0, fmt.Errorf("rotation: wal sync: %w (truncate failed: %w)", err, truncErr)
+		}
 		return 0, 0, fmt.Errorf("rotation: wal sync: %w", err)
 	}
 

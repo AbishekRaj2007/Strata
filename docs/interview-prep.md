@@ -235,16 +235,23 @@ correlating against GC trace timestamps specifically is what caught it.
 ## Honesty
 
 **What is broken or unfinished?**
-`test/fault`'s fault-injection sweep is currently failing: under an
-injected fsync failure, an acknowledged write can come back holding a
-*different key's* value, or an acknowledged delete can be resurrected after
-recovery — a real durability invariant violation. It surfaced during the
-T8.3 optimisation pass, reproduces identically on the commit before those
-changes (so it's unrelated to them, confirmed rather than assumed), and is
-an open, tracked item, not a hidden one. Separately: CPU profiling doesn't
-work in this development sandbox (disclosed above), and the T8.1 read-path
-benchmark numbers carry a documented 30x run-to-run spread from background
-load on a live desktop machine that hasn't been re-measured on a quiet one.
+Nothing currently known to be broken — but the most recent thing that *was*
+broken is a better answer to this question than "nothing," because it's
+specific and understood: `test/fault`'s fault-injection sweep caught an
+acknowledged write coming back holding a *different key's* value after an
+injected fsync failure. A failed `fsync` does not remove bytes a preceding
+`write()` already placed in the file, so a never-confirmed record sat there
+looking exactly like a durable one — same framing, same checksum — until a
+reopen replayed it and silently overwrote an acknowledged value for the
+same key. The WAL writer already had a `Rollback` mechanism built for
+exactly this case (`internal/manifest` already used the equivalent), it was
+simply never wired onto the WAL's own write path. Fixed by truncating back
+to the last confirmed-synced offset before the engine latches fatal, done
+under the same lock that already serialises every write to that file.
+Separately, still true: CPU profiling doesn't work in this development
+sandbox (disclosed above), and the T8.1 read-path benchmark numbers carry a
+documented 30x run-to-run spread from background load on a live desktop
+machine that hasn't been re-measured on a quiet one.
 
 **What would you do differently starting over?**
 Wire group commit onto the write path (`memtableSet.Add` calling

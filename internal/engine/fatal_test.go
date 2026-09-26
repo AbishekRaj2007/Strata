@@ -62,6 +62,22 @@ func TestFailedSyncPoisonsTheEngine(t *testing.T) {
 	if _, err := reopened.Get([]byte("before")); err != nil {
 		t.Errorf("the write acknowledged before the fault did not survive: %v", err)
 	}
+
+	// "during" was never acknowledged -- its Put returned wal.ErrSyncFailed,
+	// not nil -- so it must not be readable after recovery. Its bytes reached
+	// the WAL file via a real WriteAt before the injected fsync failed, and
+	// are, by content alone, indistinguishable from a genuinely durable
+	// record: same framing, same checksum. Nothing but an explicit truncate
+	// on the failure path removes them. Before that truncate was wired in,
+	// this assertion failed silently: "during" came back readable, having
+	// overwritten nothing here only because it was a new key rather than an
+	// overwrite of "before" -- test/fault's sweep is what caught the
+	// overwrite case, on a key reused across many writes.
+	if _, err := reopened.Get([]byte("during")); !errors.Is(err, ErrNotFound) {
+		t.Errorf("the write whose fsync failed came back after recovery (err=%v), want ErrNotFound -- "+
+			"its WAL record was written but never truncated away", err)
+	}
+
 	if err := reopened.Put([]byte("after-restart"), []byte("v")); err != nil {
 		t.Errorf("the reopened engine is still refusing writes: %v", err)
 	}

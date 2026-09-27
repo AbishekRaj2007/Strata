@@ -1249,6 +1249,10 @@ Tag v0.1.0, build binaries for linux/amd64 and linux/arm64, write a multi-stage 
 
 ### - [ ] T9.4 — Write the technical post
 
+> **Draft written, chart generated from real measurements, not published.** `docs/posts/tombstone-resurrection.md` covers the tombstone-drop invariant (T6.2's trap), the deliberately injected resurrection bug (`test/model/injected_test.go`'s `resurrectingSystem`), and the delta-debugging shrinker that reduces a failing 120-operation sequence to the 4-operation minimal repro `PUT, DEL, COMPACT, SCAN`. `docs/posts/shrink-progression.svg` charts the actual shrink-round-by-shrink-round sequence length (120 → 60 → 45 → 30 → 23 → 16 → 13 → 10 → 7 → 6 → 5 → 4), captured by instrumenting one real run of `Shrink` — not invented — then discarding the throwaway instrumentation once the numbers were recorded. The post also cites the real T7.1 soak number (10M ops, zero divergence, 25m14s) as corroboration.
+>
+> **Not done:** actual publication. This task's "Done when" requires the post to be *published*; publishing to a blog/LinkedIn/X is the user's own action on their own accounts, not something this session can or should do on their behalf. The draft, chart, and companion-post outline (LinkedIn architecture-diagram post, X thread) are ready for the user to publish and link back here.
+
 **Effort:** 3–4 h · **Model:** Opus 5 for structure and argument; write the prose yourself
 
 Write one substantial post on a single non-obvious thing you learned, with data. Strong candidates: what the profile revealed about where compaction time actually goes; the tombstone resurrection bug and the invariant that prevents it; what group commit did to throughput and why the shape surprised you; or the amplification trade-off plot with your interpretation.

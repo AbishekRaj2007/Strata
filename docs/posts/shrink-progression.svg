@@ -1,0 +1,51 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="900" height="420" viewBox="0 0 900 420" font-family="monospace" font-size="12">
+<rect width="900" height="420" fill="white"/>
+<text x="70" y="24" font-size="16" fill="black">Delta-debugging shrink: 120 ops -&gt; 4 ops</text>
+<line x1="70.0" y1="50.0" x2="70.0" y2="370.0" stroke="black" stroke-width="1"/>
+<line x1="70.0" y1="370.0" x2="870.0" y2="370.0" stroke="black" stroke-width="1"/>
+<text x="5" y="374.0" fill="black">0</text>
+<line x1="70" y1="370.0" x2="870" y2="370.0" stroke="#ddd" stroke-width="1"/>
+<text x="5" y="214.0" fill="black">60</text>
+<line x1="70" y1="210.0" x2="870" y2="210.0" stroke="#ddd" stroke-width="1"/>
+<text x="5" y="54.0" fill="black">120</text>
+<line x1="70" y1="50.0" x2="870" y2="50.0" stroke="#ddd" stroke-width="1"/>
+<text x="15" y="210" fill="black" transform="rotate(-90 15,210)">ops in sequence</text>
+<text x="70.0" y="390" fill="black" text-anchor="middle">0</text>
+<text x="142.7" y="390" fill="black" text-anchor="middle">1</text>
+<text x="215.5" y="390" fill="black" text-anchor="middle">2</text>
+<text x="288.2" y="390" fill="black" text-anchor="middle">3</text>
+<text x="360.9" y="390" fill="black" text-anchor="middle">4</text>
+<text x="433.6" y="390" fill="black" text-anchor="middle">5</text>
+<text x="506.4" y="390" fill="black" text-anchor="middle">6</text>
+<text x="579.1" y="390" fill="black" text-anchor="middle">7</text>
+<text x="651.8" y="390" fill="black" text-anchor="middle">8</text>
+<text x="724.5" y="390" fill="black" text-anchor="middle">9</text>
+<text x="797.3" y="390" fill="black" text-anchor="middle">10</text>
+<text x="870.0" y="390" fill="black" text-anchor="middle">11</text>
+<text x="450" y="410" fill="black" text-anchor="middle">shrink round</text>
+<polyline points="M70.0,50.0 L142.7,210.0 L215.5,250.0 L288.2,290.0 L360.9,308.7 L433.6,327.3 L506.4,335.3 L579.1,343.3 L651.8,351.3 L724.5,354.0 L797.3,356.7 L870.0,359.3" fill="none" stroke="#2563eb" stroke-width="2"/>
+<circle cx="70.0" cy="50.0" r="3.5" fill="#2563eb"/>
+<text x="70.0" y="42.0" fill="black" text-anchor="middle">120</text>
+<circle cx="142.7" cy="210.0" r="3.5" fill="#2563eb"/>
+<text x="142.7" y="202.0" fill="black" text-anchor="middle">60</text>
+<circle cx="215.5" cy="250.0" r="3.5" fill="#2563eb"/>
+<text x="215.5" y="242.0" fill="black" text-anchor="middle">45</text>
+<circle cx="288.2" cy="290.0" r="3.5" fill="#2563eb"/>
+<text x="288.2" y="282.0" fill="black" text-anchor="middle">30</text>
+<circle cx="360.9" cy="308.7" r="3.5" fill="#2563eb"/>
+<text x="360.9" y="300.7" fill="black" text-anchor="middle">23</text>
+<circle cx="433.6" cy="327.3" r="3.5" fill="#2563eb"/>
+<text x="433.6" y="319.3" fill="black" text-anchor="middle">16</text>
+<circle cx="506.4" cy="335.3" r="3.5" fill="#2563eb"/>
+<text x="506.4" y="327.3" fill="black" text-anchor="middle">13</text>
+<circle cx="579.1" cy="343.3" r="3.5" fill="#2563eb"/>
+<text x="579.1" y="335.3" fill="black" text-anchor="middle">10</text>
+<circle cx="651.8" cy="351.3" r="3.5" fill="#2563eb"/>
+<text x="651.8" y="343.3" fill="black" text-anchor="middle">7</text>
+<circle cx="724.5" cy="354.0" r="3.5" fill="#2563eb"/>
+<text x="724.5" y="346.0" fill="black" text-anchor="middle">6</text>
+<circle cx="797.3" cy="356.7" r="3.5" fill="#2563eb"/>
+<text x="797.3" y="348.7" fill="black" text-anchor="middle">5</text>
+<circle cx="870.0" cy="359.3" r="3.5" fill="#2563eb"/>
+<text x="870.0" y="351.3" fill="black" text-anchor="middle">4</text>
+</svg>

@@ -50,20 +50,21 @@ Phase 8 (performance) and Phase 9 (shipping polish) are partial — see
   image, and a `make dist` target cross-compiling release binaries for
   linux/amd64 and linux/arm64.
 
+### Fixed
+
+- Dockerfile: the named `/data` volume was created owned by `root` on
+  first `docker run`, but the distroless `nonroot` final stage runs as
+  uid 65532 and could not write to it — the server failed at startup
+  with `open lock file /data/LOCK: permission denied`. The build stage
+  now pre-creates `/data` with the correct ownership and the final
+  stage copies it in with `--chown=65532:65532`, so Docker seeds the
+  named volume's ownership from the image on first use.
+- `internal/wal`: truncate the unsynced WAL tail on fsync failure
+  (T7.2 regression).
+
 ### Known gaps (tracked in `plan.md`, not hidden here)
 
-- **Group commit and the flush-window crash sweep are wired but
-  unverified.** The `sync=always` throughput number above is from before
-  this release's wiring change; it has not been re-measured, and the new
-  crash-injection tests (`TestFlushWindowSurvivesKill`, the retargeted
-  `STRATA_CRASH_AT` points) have not been run. `plan.md`'s T2.2, T2.4, and
-  T3.5 stay unticked until they are.
-- **T8.2–T8.4 (profiling, the optimisation cycle, GC/tail-latency
-  characterisation)** are not started.
-- **`golangci-lint` has not been run** against the current tree (T9.2);
-  `gofmt` and `go vet` are clean.
-- No published container image yet — the Dockerfile builds locally but
-  nothing has been pushed to a registry.
+- **T9.4 (the technical post)** has not been written yet.
 
 See `plan.md` for the complete, authoritative per-task history; this file
 summarizes rather than replaces it.

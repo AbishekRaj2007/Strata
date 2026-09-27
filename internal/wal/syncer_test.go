@@ -76,6 +76,15 @@ func (f *fakeTarget) durableOffset() int64 {
 	return f.durable
 }
 
+// TruncateTo implements Syncable. Real callers only ever pass durableOffset's
+// value, so this only needs to make Offset agree afterwards.
+func (f *fakeTarget) TruncateTo(offset int64) error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.offset = offset
+	return nil
+}
+
 // TestNoWriterIsSignalledBeforeItsRecordIsSynced is the test plan.md T2.2
 // requires by name. The falsely-signalled-writer bug -- releasing a writer
 // that arrived mid-sync, whose bytes the in-flight fsync never covered -- is

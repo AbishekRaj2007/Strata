@@ -17,6 +17,16 @@ import (
 type Syncable interface {
 	Offset() int64
 	Sync() error
+
+	// TruncateTo discards every byte written after offset, which must be a
+	// value this target's own Offset() previously returned. It is not
+	// called by Syncer itself: leadSync runs without the caller's own
+	// write-path lock held, and the target is documented as unsafe for
+	// concurrent use, so truncating here could race a concurrent write the
+	// same way two unrelated mutexes racing on one field always can.
+	// SyncedOffset gives a caller holding that lock the value to pass here
+	// once AwaitDurable reports failure.
+	TruncateTo(offset int64) error
 }
 
 // ErrSyncerClosed reports use of a Syncer after Close.

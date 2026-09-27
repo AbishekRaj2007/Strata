@@ -204,6 +204,24 @@ func (w *Writer) Rollback(m Mark) error {
 	return nil
 }
 
+// TruncateTo is Rollback for a caller that only has an offset, not a Mark --
+// Syncer, whose leader-follower handoff (T2.2) knows only the last offset a
+// sync actually confirmed durable, never the framing state that produced it.
+//
+// offset must be a value this Writer's own Offset() previously returned.
+// blockStart and blockPos are recoverable from it alone because WriteRecord
+// keeps offset in lockstep with real file position at every point, including
+// the zero-padding it counts when a block is closed early -- so offset is
+// always an exact multiple-of-BlockSize plus a within-block remainder, never
+// merely a count of payload bytes.
+func (w *Writer) TruncateTo(offset int64) error {
+	return w.Rollback(Mark{
+		offset:     offset,
+		blockStart: (offset / BlockSize) * BlockSize,
+		blockPos:   int(offset % BlockSize),
+	})
+}
+
 // ErrSyncFailed marks an error as a failed fsync rather than any other kind
 // of I/O failure.
 //

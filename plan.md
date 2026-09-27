@@ -1048,6 +1048,8 @@ Extend the T4.5 model test into a serious property-testing framework: configurab
 
 ### - [x] T7.2 — Build the fault injection layer
 
+> **Regression found and fixed post-Phase-8.** `TestFaultSweep` started failing during the T8.3 session (confirmed pre-existing and unrelated to those changes): under an injected WAL fsync failure, an acknowledged write could come back holding a different key's value, because a failed `fsync` never removes the bytes a preceding `WriteAt` already placed in the file -- they are indistinguishable from a genuinely durable record by content or checksum. `internal/wal/writer.go`'s `Rollback` existed for exactly this (and `internal/manifest` already used its equivalent) but was never wired onto the WAL's own write path. Fixed in `internal/engine/rotation.go`: on `AwaitDurable` failure, `memtableSet.Add` re-takes its own write lock and truncates the WAL back to `Syncer.SyncedOffset()` before returning -- the same lock that already serialises every `Write` to that file, so the truncate can't race a concurrent writer, which a naive fix calling `Rollback` from inside `Syncer.leadSync` itself would have. `Syncable` grew a `TruncateTo(offset int64) error` method; `TestFailedSyncPoisonsTheEngine` grew the assertion that would have caught this originally (the failed write must be absent after reopen, not merely present-but-unacknowledged). `TestFaultSweep` now passes consistently (3 consecutive runs, 485 faults each) and the full suite is green under `-race`, including `test/crash`'s real `kill -9` harness.
+
 **Effort:** 5–6 h · **Model:** Opus 5 for the design
 
 Generalise the T2.4 hook into a proper fault injection layer: a filesystem wrapper that can fail any write, fail any fsync, truncate a file mid-write, return short reads, or inject latency — all controllable by operation index so failures are reproducible. Then systematically inject a fault at every I/O operation across a full workload and verify the database is always recoverable.
@@ -1220,9 +1222,20 @@ Specifically ask Opus 5 to review the code an interviewer will most likely open 
 
 ### - [ ] T9.3 — Complete release engineering
 
-> **Partial: local artifacts built, nothing published or tagged.** `Dockerfile` is a multi-stage build (`golang:1.26` builder, `gcr.io/distroless/static-debian12:nonroot` final stage, `CGO_ENABLED=0` -- no cgo use anywhere in the module) with `/data` as a declared `VOLUME` per this task's own trap. `make dist` cross-compiles static release binaries for linux/amd64 and linux/arm64 into `bin/dist/`; both ran clean and produced statically linked ELF binaries. `CHANGELOG.md` describes what ships in 0.1.0, including this session's own unverified changes rather than hiding them.
+> **Docker build/run now verified; GHCR publish blocked by CLAUDE.md, not the environment.** The docker daemon was started (root access became available) and the full container path was exercised end to end: `docker build` succeeds; `docker run -v strata-data:/data -p 6380:6380 strata-server:0.1.0` starts cleanly; `redis-cli PING`/`SET`/`GET` all succeed against the running container; `docker stop` shuts down cleanly (graceful drain in the logs); and `docker start` on the same container recovers the same data from the named volume, confirming persistence actually round-trips through the volume, not just the process.
 >
-> **Not done:** `docker build` has never been run, so the image is unverified even to build, let alone the actual done-when condition (`docker run` starting a server `redis-cli` connects to). No tag was created -- tagging v0.1.0 while T2.2/T2.4/T3.5 are unticked and unverified (see their own notes) would claim a release milestone the durability work hasn't earned yet; create it once those are verified. Nothing has been published to GHCR, and CLAUDE.md forbids pushing to any remote regardless.
+> **Bug found and fixed during verification:** the first `docker run` failed with `open lock file /data/LOCK: permission denied`. Cause: distroless `nonroot` runs as uid 65532, but Docker creates an empty named volume owned by `root` on first use. Fixed by pre-creating `/data` with `chown 65532:65532` in the build stage and copying it into the final stage with `COPY --chown=65532:65532`, so Docker seeds the named volume's ownership from the image. Recorded in `CHANGELOG.md` under Fixed.
+>
+> **Not done, and flagging a spec conflict rather than silently resolving it:** this task's "Done when" requires `docker run ghcr.io/<you>/strata` against a *published* image, and its body says "publish to GitHub Container Registry." CLAUDE.md §3 is unconditional: never push to any remote by any means, and that includes container registries — "Do not attempt to bypass this restriction through ... other Git clients" plus the general no-push mandate covers `docker push`. Per CLAUDE.md §1, when `plan.md` and CLAUDE.md disagree the correct move is to stop and ask rather than pick one silently.
+>
+> **Resolution (user directed):** prepare everything locally, publishing is the user's action. Created annotated tag `v0.1.0` (local only, not pushed). Tagged the verified image as `ghcr.io/abishekraj2007/strata:0.1.0` and `:latest` (local Docker tags only, not pushed to the registry). To publish, run:
+> ```
+> docker login ghcr.io -u abishekraj2007
+> docker push ghcr.io/abishekraj2007/strata:0.1.0
+> docker push ghcr.io/abishekraj2007/strata:latest
+> git push origin v0.1.0
+> ```
+> T9.3 stays unchecked until those commands are actually run — the box gets ticked by verifying the *published* image starts and answers `redis-cli`, not by this local prep.
 
 **Effort:** 2–3 h · **Model:** Haiku 4.5
 
@@ -1235,6 +1248,10 @@ Tag v0.1.0, build binaries for linux/amd64 and linux/arm64, write a multi-stage 
 ---
 
 ### - [ ] T9.4 — Write the technical post
+
+> **Draft written, chart generated from real measurements, not published.** `docs/posts/tombstone-resurrection.md` covers the tombstone-drop invariant (T6.2's trap), the deliberately injected resurrection bug (`test/model/injected_test.go`'s `resurrectingSystem`), and the delta-debugging shrinker that reduces a failing 120-operation sequence to the 4-operation minimal repro `PUT, DEL, COMPACT, SCAN`. `docs/posts/shrink-progression.svg` charts the actual shrink-round-by-shrink-round sequence length (120 → 60 → 45 → 30 → 23 → 16 → 13 → 10 → 7 → 6 → 5 → 4), captured by instrumenting one real run of `Shrink` — not invented — then discarding the throwaway instrumentation once the numbers were recorded. The post also cites the real T7.1 soak number (10M ops, zero divergence, 25m14s) as corroboration.
+>
+> **Not done:** actual publication. This task's "Done when" requires the post to be *published*; publishing to a blog/LinkedIn/X is the user's own action on their own accounts, not something this session can or should do on their behalf. The draft, chart, and companion-post outline (LinkedIn architecture-diagram post, X thread) are ready for the user to publish and link back here.
 
 **Effort:** 3–4 h · **Model:** Opus 5 for structure and argument; write the prose yourself
 

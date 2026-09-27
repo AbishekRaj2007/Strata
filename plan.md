@@ -1281,6 +1281,22 @@ Then run a mock interview with Fable 5 in the harshest mode you can prompt for, 
 
 ---
 
+### - [ ] T9.6 — npm distribution (added, not in the original phase list)
+
+> **Packages, build pipeline, and shim built and verified locally; not published.** Three packages under `npm/`: `@abishekraj2007/strata` (the main package, thin `bin/strata-server.js`/`bin/strata-cli.js` launchers) and `@abishekraj2007/strata-linux-{x64,arm64}` (prebuilt binaries, listed as the main package's `optionalDependencies`), per ADR-010. `make npm-pack` stages binaries from `make dist` into the platform packages and stamps a matching version into all three via `npm/stamp-version.js`. `test/npm/verify.sh` packs all three with `npm pack`, installs them together into a scratch directory (so the optional dependency resolves from the local tarball instead of a registry that has never seen this package), runs the installed `strata-server` shim, and confirms `redis-cli PING`/`SET`/`GET` against it — this passed. It also caught a real bug: the shim originally used `spawnSync`, which blocks the wrapper's event loop inside a single `wait()` call and never gives a `SIGTERM` handler the chance to run, so killing the npm-launched process orphaned the real Go binary instead of reaching its graceful-shutdown drain path. Fixed by switching to asynchronous `spawn` with explicit `SIGINT`/`SIGTERM` forwarding and exit-status/signal propagation (`npm/strata/bin/exec-native.js`); the fixed version's rerun shows the real shutdown log sequence (`shutdown signal received; draining` → `shutdown complete`), not an orphaned process.
+>
+> **Not done:** publishing. `npm publish` is a push to a public registry, forbidden by CLAUDE.md the same way `git push`/`docker push` are. Nothing has been published; `npm login` and `npm publish` (platform packages first, so the main package's `optionalDependencies` resolve) are the user's own action.
+
+**Effort:** 2–3 h · **Model:** Sonnet 5
+
+Package the existing cross-compiled binaries (T9.3's `make dist` output) for distribution via `npm install`, so trying Strata doesn't require cloning the repo or pulling a container image.
+
+**Done when:** `npm install -g @abishekraj2007/strata` on a supported platform installs a working `strata-server` that `redis-cli` connects to, verified locally without requiring an actual publish to prove it.
+
+**Trap:** a `postinstall` script that downloads the binary at install time. That pattern runs arbitrary code with the installing user's permissions on every `npm install`, which is exactly the shape of npm's own recurring supply-chain incidents. Ship the binary inside the published package instead (see ADR-010).
+
+---
+
 ## 19. Benchmark targets
 
 Targets, not promises. Record what you measure and never round in your favour. Assumes a mid-range laptop with NVMe.

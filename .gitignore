@@ -27,6 +27,13 @@ syncer-*/
 coverage.out
 coverage.html
 
+# npm packaging (T9.6): prebuilt binaries are staged by `make npm-pack`,
+# not committed -- they're rebuilt from cmd/ for every release the same way
+# bin/dist/ is.
+/npm/strata-linux-x64/bin/
+/npm/strata-linux-arm64/bin/
+*.tgz
+
 # Editor and OS noise
 .DS_Store
 *.swp

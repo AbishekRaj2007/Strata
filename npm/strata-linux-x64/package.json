@@ -1,0 +1,23 @@
+{
+  "name": "@abishekraj2007/strata-linux-x64",
+  "version": "0.0.0",
+  "description": "Prebuilt linux/x64 strata-server and strata-cli binaries for @abishekraj2007/strata.",
+  "license": "MIT",
+  "homepage": "https://github.com/AbishekRaj2007/Strata",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/AbishekRaj2007/Strata.git"
+  },
+  "os": [
+    "linux"
+  ],
+  "cpu": [
+    "x64"
+  ],
+  "files": [
+    "bin"
+  ],
+  "publishConfig": {
+    "access": "public"
+  }
+}

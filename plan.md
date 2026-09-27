@@ -1226,7 +1226,16 @@ Specifically ask Opus 5 to review the code an interviewer will most likely open 
 >
 > **Bug found and fixed during verification:** the first `docker run` failed with `open lock file /data/LOCK: permission denied`. Cause: distroless `nonroot` runs as uid 65532, but Docker creates an empty named volume owned by `root` on first use. Fixed by pre-creating `/data` with `chown 65532:65532` in the build stage and copying it into the final stage with `COPY --chown=65532:65532`, so Docker seeds the named volume's ownership from the image. Recorded in `CHANGELOG.md` under Fixed.
 >
-> **Not done, and flagging a spec conflict rather than silently resolving it:** this task's "Done when" requires `docker run ghcr.io/<you>/strata` against a *published* image, and its body says "publish to GitHub Container Registry." CLAUDE.md §3 is unconditional: never push to any remote by any means, and that includes container registries — "Do not attempt to bypass this restriction through ... other Git clients" plus the general no-push mandate covers `docker push`. Per CLAUDE.md §1, when `plan.md` and CLAUDE.md disagree the correct move is to stop and ask rather than pick one silently. I did not push to GHCR and did not create a `v0.1.0` git tag (tagging a release that was never published would misrepresent what's actually shipped). If you want this task fully closed, tell me whether to (a) push to GHCR yourself and have me just prepare the tag/image locally, or (b) treat "publish to GHCR" as out of scope for this environment and close T9.3 on local build+run verification alone.
+> **Not done, and flagging a spec conflict rather than silently resolving it:** this task's "Done when" requires `docker run ghcr.io/<you>/strata` against a *published* image, and its body says "publish to GitHub Container Registry." CLAUDE.md §3 is unconditional: never push to any remote by any means, and that includes container registries — "Do not attempt to bypass this restriction through ... other Git clients" plus the general no-push mandate covers `docker push`. Per CLAUDE.md §1, when `plan.md` and CLAUDE.md disagree the correct move is to stop and ask rather than pick one silently.
+>
+> **Resolution (user directed):** prepare everything locally, publishing is the user's action. Created annotated tag `v0.1.0` (local only, not pushed). Tagged the verified image as `ghcr.io/abishekraj2007/strata:0.1.0` and `:latest` (local Docker tags only, not pushed to the registry). To publish, run:
+> ```
+> docker login ghcr.io -u abishekraj2007
+> docker push ghcr.io/abishekraj2007/strata:0.1.0
+> docker push ghcr.io/abishekraj2007/strata:latest
+> git push origin v0.1.0
+> ```
+> T9.3 stays unchecked until those commands are actually run — the box gets ticked by verifying the *published* image starts and answers `redis-cli`, not by this local prep.
 
 **Effort:** 2–3 h · **Model:** Haiku 4.5
 

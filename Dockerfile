@@ -19,14 +19,21 @@ ARG VERSION=dev
 RUN CGO_ENABLED=0 go build -ldflags "-X main.version=${VERSION}" \
     -o /out/strata-server ./cmd/strata-server
 
+# distroless:nonroot runs as uid 65532. A named volume with no prior content
+# is created owned by root on first `docker run`, which leaves the server
+# unable to write to it. Pre-creating /data here with that ownership means
+# Docker seeds the named volume's owner from this image's copy instead.
+RUN mkdir -p /out/data && chown 65532:65532 /out/data
+
 # Final stage: distroless static, nonroot. No shell, no package manager, no
 # redis-cli -- this image is the server and nothing else. redis-cli or
 # strata-cli against it run from the host or a separate container.
 FROM gcr.io/distroless/static-debian12:nonroot
 
 COPY --from=build /out/strata-server /usr/local/bin/strata-server
+COPY --from=build --chown=65532:65532 /out/data /data
 
-# Not baked into the image: a data directory here would be silently
+# Not baked into the image: any data written here would be silently
 # discarded on `docker rm`, and this is exactly the trap plan.md's T9.3
 # calls out -- "someone will try it, lose their data, and conclude your
 # database is broken." /data must be a mounted volume at run time, e.g.:

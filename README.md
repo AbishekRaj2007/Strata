@@ -1,8 +1,16 @@
 # Strata
 
+[![CI](https://github.com/AbishekRaj2007/Strata/actions/workflows/ci.yml/badge.svg)](https://github.com/AbishekRaj2007/Strata/actions/workflows/ci.yml)
+[![npm version](https://img.shields.io/npm/v/@abishekraj2007/strata.svg)](https://www.npmjs.com/package/@abishekraj2007/strata)
+[![Go version](https://img.shields.io/github/go-mod/go-version/AbishekRaj2007/Strata)](go.mod)
+[![license](https://img.shields.io/github/license/AbishekRaj2007/Strata)](LICENSE)
+[![platform](https://img.shields.io/badge/platform-linux%20x64%20%7C%20arm64-blue)](#non-goals)
+
 A persistent, log-structured key-value store with a Redis-compatible wire protocol. Written in Go, with no storage-engine dependencies — the skip list, SSTable format, compaction, and WAL are all hand-implemented rather than wrapping RocksDB or Pebble.
 
 `redis-cli`, standard Redis client libraries, and `redis-benchmark`/`valkey-benchmark` work against it unmodified.
+
+**Contents:** [Benchmarks](#benchmarks) · [Architecture](#architecture) · [Quick start](#quick-start) · [Features](#features) · [Non-goals](#non-goals) · [Design decisions](#design-decisions) · [What I learned](#what-i-learned-including-what-went-wrong) · [Documentation](#documentation) · [Building](#building) · [Layout](#layout) · [On AI assistance](#on-ai-assistance)
 
 ## Benchmarks
 

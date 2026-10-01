@@ -1,6 +1,6 @@
 {
   "name": "@abishekraj2007/strata",
-  "version": "0.0.0",
+  "version": "0.1.1",
   "description": "Persistent, log-structured key-value store with a Redis-compatible wire protocol. Native Go binary, distributed via npm.",
   "license": "MIT",
   "homepage": "https://github.com/AbishekRaj2007/Strata",
@@ -22,8 +22,8 @@
     "bin"
   ],
   "optionalDependencies": {
-    "@abishekraj2007/strata-linux-x64": "0.0.0",
-    "@abishekraj2007/strata-linux-arm64": "0.0.0"
+    "@abishekraj2007/strata-linux-x64": "0.1.1",
+    "@abishekraj2007/strata-linux-arm64": "0.1.1"
   },
   "publishConfig": {
     "access": "public"

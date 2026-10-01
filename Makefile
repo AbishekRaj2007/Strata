@@ -38,6 +38,22 @@ dist: ## Cross-compile static release binaries for linux/amd64 and linux/arm64 i
 docker-build: ## Build the strata-server Docker image tagged with the current version
 	docker build --build-arg VERSION=$(VERSION) -t strata-server:$(VERSION) .
 
+# T9.6's npm distribution. Version is git describe with the leading "v"
+# stripped, since package.json's version field must be plain semver.
+NPM_VERSION := $(shell echo $(VERSION) | sed 's/^v//')
+
+.PHONY: npm-pack
+npm-pack: dist ## Stage npm/ packages with built binaries and the current version
+	mkdir -p npm/strata-linux-x64/bin npm/strata-linux-arm64/bin
+	cp $(DIST_DIR)/linux-amd64/strata-server $(DIST_DIR)/linux-amd64/strata-cli npm/strata-linux-x64/bin/
+	cp $(DIST_DIR)/linux-arm64/strata-server $(DIST_DIR)/linux-arm64/strata-cli npm/strata-linux-arm64/bin/
+	chmod +x npm/strata-linux-x64/bin/* npm/strata-linux-arm64/bin/*
+	node npm/stamp-version.js $(NPM_VERSION)
+
+.PHONY: npm-verify
+npm-verify: npm-pack ## Locally pack, install, and run the npm packages end to end (no publish)
+	test/npm/verify.sh
+
 .PHONY: test
 test: ## Run all tests
 	go test ./...

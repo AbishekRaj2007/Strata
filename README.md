@@ -66,6 +66,14 @@ redis-cli -p 6380 SET foo bar
 redis-cli -p 6380 GET foo
 ```
 
+Or, without cloning, via npm (linux/x64 and linux/arm64; see ADR-010):
+
+```sh
+npm install -g @abishekraj2007/strata
+strata-server -data-dir ./data &
+redis-cli -p 6380 SET foo bar
+```
+
 ## Features
 
 - Full `Put`/`Get`/`Delete`/`Scan` semantics over RESP2, including `SCAN`'s cursor protocol
@@ -162,6 +170,7 @@ internal/compaction/  compaction picker and executor
 internal/cache/       block cache
 internal/log/         structured logging interface
 test/                 crash harness, reference model tests, workload generators
+npm/                  npm packaging for `npm install -g @abishekraj2007/strata` (ADR-010)
 ```
 
 `internal/` is deliberate: Go forbids external modules from importing it, which states that these are implementation details rather than a public API.
